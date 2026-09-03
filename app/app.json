@@ -1,0 +1,78 @@
+{
+  "expo": {
+    "name": "FarmTrack",
+    "slug": "farmtrack",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "farmtrack",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.farmtrack.app",
+      "icon": "./assets/expo.icon",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "FarmTrack uses your location to center the ranch map and navigate to livestock.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "FarmTrack needs background location to monitor geofence crossings and alert you when a fence is breached.",
+        "UIBackgroundModes": [
+          "location",
+          "audio"
+        ]
+      }
+    },
+    "android": {
+      "package": "com.farmtrack.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#1B3022",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "POST_NOTIFICATIONS",
+        "VIBRATE",
+        "WAKE_LOCK",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION"
+      ],
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "output": "single",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#1B3022",
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 76
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow FarmTrack to use your location for ranch map navigation.",
+          "locationAlwaysAndWhenInUsePermission": "Allow FarmTrack to use your location even when the app is in the background so it can warn you when you cross a virtual fence."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#1B3022",
+          "sounds": []
+        }
+      ],
+      "expo-font"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    }
+  }
+}
