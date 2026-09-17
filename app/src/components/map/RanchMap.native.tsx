@@ -22,34 +22,11 @@ import type { RanchMapHandle, RanchMapProps } from '@/components/map/RanchMap.ty
 import { Colors, RANCH_REGION, Shadows } from '@/constants/theme';
 import type { MapLatLng } from '@/types/database';
 import { statusMarkerColor } from '@/lib/utils';
-
-/**
- * Two public raster sources turned out to be dead ends despite returning
- * HTTP 200: `tile.openstreetmap.org` sends an `x-blocked` header rejecting
- * app traffic (https://operations.osmfoundation.org/policies/tiles/), and
- * `basemaps.cartocdn.com` now serves a baked-in "API KEY REQUIRED" watermark
- * image instead of a real tile — a 200 status doesn't mean a usable tile,
- * always check the actual pixels. OpenTopoMap is a verified-working,
- * no-signup fallback for dev. Set EXPO_PUBLIC_MAPTILER_KEY (free tier, no
- * card required: https://cloud.maptiler.com) before shipping to production —
- * OpenTopoMap is volunteer-run and not meant for deployed-app traffic either.
- */
-const MAPTILER_KEY = process.env.EXPO_PUBLIC_MAPTILER_KEY;
-const OSM_STANDARD_TILE_URL = MAPTILER_KEY
-  ? `https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=${MAPTILER_KEY}`
-  : 'https://tile.opentopomap.org/{z}/{x}/{y}.png';
-const ESRI_SATELLITE_TILE_URL =
-  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
-// OpenTopoMap only renders tiles up to z17 (higher requests return a "max
-// zoom layer = 17" placeholder image); MapTiler's streets style goes to 19+.
-const OSM_STANDARD_MAX_ZOOM = MAPTILER_KEY ? 19 : 17;
-
-const TILE_ATTRIBUTION: Record<RanchMapProps['mapType'], string> = {
-  standard: MAPTILER_KEY
-    ? '© MapTiler © OpenStreetMap contributors'
-    : '© OpenTopoMap (CC-BY-SA) © OpenStreetMap contributors',
-  satellite: '© Esri, Maxar, Earthstar Geographics',
-};
+import {
+  OSM_ATTRIBUTION_LABEL,
+  OSM_MAX_ZOOM,
+  OSM_TILE_URL_TEMPLATE,
+} from '@/lib/osmTiles';
 
 const DRAFT_STROKE = '#6FCFEE';
 const DRAFT_FILL = 'rgba(111,207,238,0.25)';
@@ -78,7 +55,6 @@ function cleanPolygonCoords(coords: MapLatLng[]): MapLatLng[] {
 
 function RanchMapInner(
   {
-    mapType,
     locations,
     polygons,
     draftPoints,
@@ -174,10 +150,10 @@ function RanchMapInner(
       <MapView
         ref={mapRef}
         style={StyleSheet.absoluteFill}
-        // Always PROVIDER_DEFAULT + mapType="none": these are literal JSX
-        // props, never derived from `mapType` state, so the native Apple/
-        // Google base layer can never render — not even for one frame
-        // during the standard/satellite toggle. Do not wire either to state.
+        // PROVIDER_DEFAULT + mapType="none" suppress the native Apple/Google
+        // base layer entirely, leaving the OSM UrlTile below as the only
+        // imagery. Keep both as literal JSX props — wiring either to state is
+        // what would let a Google/Apple frame flash through.
         provider={PROVIDER_DEFAULT}
         mapType="none"
         initialRegion={initialRegion}
@@ -207,8 +183,8 @@ function RanchMapInner(
         showsUserLocation
         showsCompass={false}>
         <UrlTile
-          urlTemplate={mapType === 'satellite' ? ESRI_SATELLITE_TILE_URL : OSM_STANDARD_TILE_URL}
-          maximumZ={mapType === 'satellite' ? 19 : OSM_STANDARD_MAX_ZOOM}
+          urlTemplate={OSM_TILE_URL_TEMPLATE}
+          maximumZ={OSM_MAX_ZOOM}
           flipY={false}
           shouldReplaceMapContent
         />
@@ -392,7 +368,7 @@ function RanchMapInner(
         })}
       </MapView>
       <View style={styles.attribution} pointerEvents="none">
-        <Text style={styles.attributionText}>{TILE_ATTRIBUTION[mapType]}</Text>
+        <Text style={styles.attributionText}>{OSM_ATTRIBUTION_LABEL}</Text>
       </View>
       <MapLegend />
     </View>

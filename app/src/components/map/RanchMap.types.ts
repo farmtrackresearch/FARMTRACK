@@ -17,7 +17,6 @@ export type RanchMapHandle = {
 };
 
 export type RanchMapProps = {
-  mapType: 'standard' | 'satellite';
   locations: LivestockLocation[];
   polygons: RanchPolygon[];
   draftPoints: MapLatLng[];

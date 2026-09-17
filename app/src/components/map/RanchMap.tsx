@@ -8,6 +8,7 @@ import {
 } from 'react';
 import {
   DimensionValue,
+  Image,
   LayoutChangeEvent,
   PanResponder,
   Pressable,
@@ -20,6 +21,7 @@ import Svg, { Line, Polygon as SvgPolygon, Polyline } from 'react-native-svg';
 import { MapLegend } from '@/components/map/MapLegend';
 import type { RanchMapHandle, RanchMapProps } from '@/components/map/RanchMap.types';
 import { Colors, RANCH_REGION, Shadows } from '@/constants/theme';
+import { OSM_ATTRIBUTION_LABEL, OSM_MAX_ZOOM, osmTileUrl } from '@/lib/osmTiles';
 import { statusMarkerColor } from '@/lib/utils';
 import type { MapLatLng } from '@/types/database';
 
@@ -78,12 +80,59 @@ function computeRegion(bounds: Bounds, padRatio = 0.3) {
 
 type Region = ReturnType<typeof computeRegion>;
 
+/**
+ * Web Mercator, in a normalised [0,1] world square with y pointing down — the
+ * projection raster tiles are cut in. Positions here must agree with the tile
+ * grid exactly, or fences drift off the roads they were drawn along.
+ */
+const TILE_SIZE = 256;
+const MERCATOR_MAX_LAT = 85.0511;
+const MAX_TILES = 200;
+
+const clampLat = (lat: number) => Math.max(-MERCATOR_MAX_LAT, Math.min(MERCATOR_MAX_LAT, lat));
+
+const lonToWorldX = (lon: number) => (lon + 180) / 360;
+const latToWorldY = (lat: number) =>
+  0.5 - Math.log(Math.tan(Math.PI / 4 + (clampLat(lat) * Math.PI) / 360)) / (2 * Math.PI);
+const worldXToLon = (x: number) => x * 360 - 180;
+const worldYToLat = (y: number) =>
+  (2 * Math.atan(Math.exp((0.5 - y) * 2 * Math.PI)) - Math.PI / 2) * (180 / Math.PI);
+
+type WorldBox = { x0: number; y0: number; w: number; h: number };
+
+function worldBox(r: Region): WorldBox {
+  const x0 = lonToWorldX(r.west);
+  const y0 = latToWorldY(r.north);
+  return {
+    x0,
+    y0,
+    w: lonToWorldX(r.east) - x0 || 1e-9,
+    h: latToWorldY(r.south) - y0 || 1e-9,
+  };
+}
+
+/**
+ * Tiles are square, so x and y must share one scale. Expand the short axis to
+ * match the canvas aspect — never crop, so everything that fit still fits.
+ */
+function fitRegionToAspect(r: Region, size: Size): Region {
+  if (!size.width || !size.height) return r;
+  const { x0, y0, w, h } = worldBox(r);
+  const target = size.width / size.height;
+  if (w / h < target) {
+    const half = (h * target) / 2;
+    const cx = x0 + w / 2;
+    return { ...r, west: worldXToLon(cx - half), east: worldXToLon(cx + half) };
+  }
+  const half = w / target / 2;
+  const cy = y0 + h / 2;
+  return { ...r, north: worldYToLat(cy - half), south: worldYToLat(cy + half) };
+}
+
 function toPercent(coord: MapLatLng, r: Region) {
-  const { west, north, east, south } = r;
-  const width = east - west || 1;
-  const height = north - south || 1;
-  const x = ((coord.longitude - west) / width) * 100;
-  const y = ((north - coord.latitude) / height) * 100;
+  const { x0, y0, w, h } = worldBox(r);
+  const x = ((lonToWorldX(coord.longitude) - x0) / w) * 100;
+  const y = ((latToWorldY(coord.latitude) - y0) / h) * 100;
   return {
     left: `${Math.max(0, Math.min(100, x))}%`,
     top: `${Math.max(0, Math.min(100, y))}%`,
@@ -91,13 +140,44 @@ function toPercent(coord: MapLatLng, r: Region) {
 }
 
 function fromPercent(xPct: number, yPct: number, r: Region): MapLatLng {
-  const { west, north, east, south } = r;
-  const width = east - west || 1;
-  const height = north - south || 1;
+  const { x0, y0, w, h } = worldBox(r);
   return {
-    longitude: west + (xPct / 100) * width,
-    latitude: north - (yPct / 100) * height,
+    longitude: worldXToLon(x0 + (xPct / 100) * w),
+    latitude: worldYToLat(y0 + (yPct / 100) * h),
   };
+}
+
+type Tile = { key: string; url: string; left: number; top: number; size: number };
+
+function computeTiles(r: Region, size: Size): Tile[] {
+  if (!size.width || !size.height) return [];
+  const { x0, y0, w } = worldBox(r);
+  const pxPerWorld = size.width / w;
+  const zoom = Math.max(0, Math.min(OSM_MAX_ZOOM, Math.round(Math.log2(pxPerWorld / TILE_SIZE))));
+  const n = 2 ** zoom;
+  const tilePx = pxPerWorld / n;
+
+  const minX = Math.floor(x0 * n);
+  const maxX = Math.floor((x0 + w) * n);
+  const minY = Math.max(0, Math.floor(y0 * n));
+  const maxY = Math.min(n - 1, Math.floor((y0 + (size.height / pxPerWorld)) * n));
+  if ((maxX - minX + 1) * (maxY - minY + 1) > MAX_TILES) return [];
+
+  const tiles: Tile[] = [];
+  for (let x = minX; x <= maxX; x++) {
+    for (let y = minY; y <= maxY; y++) {
+      tiles.push({
+        key: `${zoom}/${x}/${y}`,
+        // Wrap x so panning across the antimeridian still requests a real tile.
+        url: osmTileUrl(zoom, ((x % n) + n) % n, y),
+        left: (x / n - x0) * pxPerWorld,
+        top: (y / n - y0) * pxPerWorld,
+        // Round up: fractional tile sizes leave hairline seams between images.
+        size: Math.ceil(tilePx) + 1,
+      });
+    }
+  }
+  return tiles;
 }
 
 function toSvgXy(c: MapLatLng, size: Size, r: Region) {
@@ -117,7 +197,6 @@ function toSvgPoints(coords: MapLatLng[], size: Size, r: Region) {
 
 function RanchMapInner(
   {
-    mapType,
     locations,
     polygons,
     draftPoints,
@@ -133,17 +212,16 @@ function RanchMapInner(
   const [size, setSize] = useState<Size>({ width: 0, height: 0 });
   const [cursor, setCursor] = useState<MapLatLng | null>(null);
   const draggingIdx = useRef<number | null>(null);
-  const userRegionRef = useRef<Region | null>(null);
+  const [userRegion, setUserRegion] = useState<Region | null>(null);
 
   const polygonCoords = useMemo(
     () => polygons.flatMap((p) => p.coords),
     [polygons]
   );
 
-  const region: Region = useMemo(() => {
-    if (userRegionRef.current) return userRegionRef.current;
-    const coords = polygonCoords.length > 0 ? polygonCoords : [];
-    const b = computeBounds(coords);
+  const baseRegion: Region = useMemo(() => {
+    if (userRegion) return userRegion;
+    const b = computeBounds(polygonCoords);
     if (b) return computeRegion(b);
     const { latitude, longitude, latitudeDelta, longitudeDelta } = RANCH_REGION;
     return {
@@ -152,18 +230,16 @@ function RanchMapInner(
       south: latitude - latitudeDelta / 2,
       north: latitude + latitudeDelta / 2,
     };
-  }, [polygonCoords]);
+  }, [userRegion, polygonCoords]);
+
+  const region: Region = useMemo(() => fitRegionToAspect(baseRegion, size), [baseRegion, size]);
+  const tiles = useMemo(() => computeTiles(region, size), [region, size]);
 
   const fitToCoordinates = useCallback<NonNullable<RanchMapHandle['fitToCoordinates']>>(
     (coords, opts) => {
       const b = computeBounds(coords);
       if (!b) return;
-      const padding = opts?.edgePadding;
-      const padRatio = padding
-        ? 0.5
-        : 0.3;
-      userRegionRef.current = computeRegion(b, padRatio);
-      setSize((s) => ({ ...s, width: s.width + 0.0001 }));
+      setUserRegion(computeRegion(b, opts?.edgePadding ? 0.5 : 0.3));
     },
     []
   );
@@ -242,7 +318,7 @@ function RanchMapInner(
     <View style={styles.wrap} onLayout={onLayout}>
       <View
         {...panResponder.panHandlers}
-        style={[styles.canvas, mapType === 'satellite' ? styles.satellite : styles.standard]}
+        style={styles.canvas}
         onTouchStart={(e) => {
           if (!size.width || !size.height) return;
           const t = e.nativeEvent.touches[0];
@@ -255,6 +331,14 @@ function RanchMapInner(
           setCursor(coord);
         }}
         onTouchEnd={() => setCursor(null)}>
+        {tiles.map((t) => (
+          <Image
+            key={t.key}
+            source={{ uri: t.url }}
+            style={{ position: 'absolute', left: t.left, top: t.top, width: t.size, height: t.size }}
+          />
+        ))}
+
         <Pressable
           style={StyleSheet.absoluteFill}
           onPress={(e) => {
@@ -458,10 +542,8 @@ function RanchMapInner(
           );
         })}
 
-        <View style={styles.webBadge} pointerEvents="none">
-          <Text style={styles.webBadgeText}>
-            Web preview map · Use iOS/Android for full satellite GIS
-          </Text>
+        <View style={styles.attribution} pointerEvents="none">
+          <Text style={styles.attributionText}>{OSM_ATTRIBUTION_LABEL}</Text>
         </View>
       </View>
 
@@ -480,11 +562,6 @@ const styles = StyleSheet.create({
     flex: 1,
     overflow: 'hidden',
     position: 'relative',
-  },
-  satellite: {
-    backgroundColor: '#3d4a2e',
-  },
-  standard: {
     backgroundColor: '#dce8d4',
   },
   marker: {
@@ -562,19 +639,18 @@ const styles = StyleSheet.create({
     color: FENCE_STROKE,
     letterSpacing: 0.3,
   },
-  webBadge: {
+  attribution: {
     position: 'absolute',
-    left: 12,
-    bottom: 12,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
+    right: 6,
+    bottom: 4,
+    backgroundColor: 'rgba(255,255,255,0.75)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
     zIndex: 3,
   },
-  webBadgeText: {
-    color: '#fff',
-    fontSize: 11,
-    fontWeight: '600',
+  attributionText: {
+    fontSize: 9,
+    color: '#333',
   },
 });

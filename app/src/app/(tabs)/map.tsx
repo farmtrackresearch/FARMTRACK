@@ -49,7 +49,6 @@ export default function MapScreen() {
   const { locations, geofences, saveGeofence, deleteGeofence, isAdmin, recordFenceCrossing } = useFarm();
   const { triggerAlarm, dismissAlarm, activeAlarm } = useAlarm();
 
-  const [mapType, setMapType] = useState<'standard' | 'satellite'>('satellite');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [drawing, setDrawing] = useState(false);
   const [draftPoints, setDraftPoints] = useState<MapLatLng[]>([]);
@@ -496,18 +495,11 @@ export default function MapScreen() {
             </Text>
           </View>
         </View>
-        <Pressable
-          style={styles.satBtn}
-          onPress={() => setMapType((t) => (t === 'satellite' ? 'standard' : 'satellite'))}>
-          <MaterialCommunityIcons name="layers" size={16} color="#fff" />
-          <Text style={styles.satText}>{mapType === 'satellite' ? 'Satellite' : 'Standard'}</Text>
-        </Pressable>
       </View>
 
       <View style={styles.mapWrap}>
         <RanchMap
           ref={mapRef}
-          mapType={mapType}
           locations={locations}
           polygons={polygons}
           draftPoints={draftPoints}
@@ -628,16 +620,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: Colors.primaryDark,
   },
-  satBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: Colors.primary,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: Radius.md,
-  },
-  satText: { color: '#fff', fontWeight: '700', fontSize: 13 },
   mapWrap: { flex: 1 },
   fab: {
     position: 'absolute',

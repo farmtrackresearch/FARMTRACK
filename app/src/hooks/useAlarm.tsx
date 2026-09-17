@@ -1,7 +1,7 @@
 import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { Platform, Vibration } from 'react-native';
 import * as Notifications from 'expo-notifications';
-import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
+import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from 'expo-audio';
 
 export type AlarmSeverity = 'warning' | 'breach';
 
@@ -36,52 +36,6 @@ const AlarmContext = createContext<AlarmContextValue | null>(null);
 const BREACH_PATTERN = [0, 500, 200, 500, 200, 500, 200, 800] as const;
 const WARNING_PATTERN = [0, 300, 150, 300] as const;
 
-const SAMPLE_RATE = 22050;
-
-function generateToneWav(frequency: number, durationMs: number, volume = 0.85): string {
-  const numSamples = Math.floor(SAMPLE_RATE * (durationMs / 1000));
-  const bytesPerSample = 2;
-  const byteRate = SAMPLE_RATE * bytesPerSample;
-  const dataSize = numSamples * bytesPerSample;
-  const buffer = new ArrayBuffer(44 + dataSize);
-  const view = new DataView(buffer);
-
-  const writeStr = (offset: number, str: string) => {
-    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
-  };
-
-  writeStr(0, 'RIFF');
-  view.setUint32(4, 36 + dataSize, true);
-  writeStr(8, 'WAVE');
-  writeStr(12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, SAMPLE_RATE, true);
-  view.setUint32(28, byteRate, true);
-  view.setUint16(32, bytesPerSample, true);
-  view.setUint16(34, 16, true);
-  writeStr(36, 'data');
-  view.setUint32(40, dataSize, true);
-
-  let offset = 44;
-  for (let i = 0; i < numSamples; i++) {
-    const t = i / SAMPLE_RATE;
-    const envelope = Math.min(1, i / 120) * Math.min(1, (numSamples - i) / 120);
-    const sample = Math.sin(2 * Math.PI * frequency * t) * volume * envelope;
-    view.setInt16(offset, Math.max(-1, Math.min(1, sample)) * 32767, true);
-    offset += 2;
-  }
-
-  let binary = '';
-  const bytes = new Uint8Array(buffer);
-  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-  return 'data:audio/wav;base64,' + btoa(binary);
-}
-
-const WARNING_BEEP_WAV = generateToneWav(1400, 180, 0.8);
-const BREACH_BEEP_WAV = generateToneWav(2000, 200, 0.9);
-
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -100,32 +54,26 @@ export function AlarmProvider({ children }: { children: ReactNode }) {
   const notifTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const audioTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const maxDurationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const soundInstancesRef = useRef<Map<string, Audio.Sound>>(new Map());
+  const soundInstancesRef = useRef<Map<string, AudioPlayer>>(new Map());
   const audioReadyRef = useRef(false);
 
   useEffect(() => {
+    const players = soundInstancesRef.current;
+
     (async () => {
       try {
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: false,
-          staysActiveInBackground: true,
-          interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-          interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-          shouldDuckAndroid: false,
-          playThroughEarpieceAndroid: false,
+        await setAudioModeAsync({
+          allowsRecording: false,
+          shouldPlayInBackground: true,
+          interruptionMode: 'doNotMix',
+          shouldRouteThroughEarpiece: false,
+          // A breach alarm that the ringer switch can silence is no alarm.
+          playsInSilentMode: true,
         });
 
         try {
-          const { sound: ws } = await Audio.Sound.createAsync(
-            { uri: WARNING_BEEP_WAV },
-            { shouldPlay: false, volume: 1.0 }
-          );
-          soundInstancesRef.current.set('warning', ws);
-          const { sound: bs } = await Audio.Sound.createAsync(
-            { uri: BREACH_BEEP_WAV },
-            { shouldPlay: false, volume: 1.0 }
-          );
-          soundInstancesRef.current.set('breach', bs);
+          players.set('warning', createAudioPlayer(require('../../assets/sounds/warning.wav')));
+          players.set('breach', createAudioPlayer(require('../../assets/sounds/breach.wav')));
           audioReadyRef.current = true;
         } catch (audioErr) {
           console.warn('[AlarmProvider] audio preload failed:', audioErr);
@@ -161,7 +109,15 @@ export function AlarmProvider({ children }: { children: ReactNode }) {
 
     return () => {
       stopAllTimers();
-      void stopAllSounds();
+      // Players built with createAudioPlayer aren't auto-released the way
+      // useAudioPlayer's are, so free them explicitly.
+      for (const snd of players.values()) {
+        try {
+          snd.remove();
+        } catch {}
+      }
+      players.clear();
+      audioReadyRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -170,8 +126,8 @@ export function AlarmProvider({ children }: { children: ReactNode }) {
     const map = soundInstancesRef.current;
     for (const [key, snd] of map.entries()) {
       try {
-        await snd.stopAsync();
-        await snd.setPositionAsync(0);
+        snd.pause();
+        snd.seekTo(0);
       } catch {
         void key;
       }
@@ -183,7 +139,8 @@ export function AlarmProvider({ children }: { children: ReactNode }) {
     const snd = soundInstancesRef.current.get(severity);
     if (!snd) return;
     try {
-      await snd.replayAsync();
+      snd.seekTo(0);
+      snd.play();
     } catch (err) {
       console.warn('[AlarmProvider] beep play failed:', err);
     }
