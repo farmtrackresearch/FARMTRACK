@@ -114,10 +114,10 @@ export const A11y = {
   minTouchTargetLarge: 48,
 } as const;
 
-/** Approximate Montana ranch center for map defaults */
+/** Approximate ranch center (Dumaguete, Negros Oriental, PH) for map defaults */
 export const RANCH_REGION = {
-  latitude: 45.682,
-  longitude: -110.356,
+  latitude: 9.3065,
+  longitude: 123.3077,
   latitudeDelta: 0.025,
   longitudeDelta: 0.025,
 } as const;

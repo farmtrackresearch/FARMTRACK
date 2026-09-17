@@ -79,6 +79,15 @@
           "microphonePermission": false,
           "recordAudioAndroid": false
         }
+      ],
+      "@maplibre/maplibre-react-native",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "enableSceneSupport": true
+          }
+        }
       ]
     ],
     "experiments": {

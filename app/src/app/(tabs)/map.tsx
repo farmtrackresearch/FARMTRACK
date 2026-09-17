@@ -98,7 +98,7 @@ export default function MapScreen() {
   // `initialRegion` on the native map only applies once, at first mount — before
   // fences/livestock have usually finished loading from Supabase. Once real data
   // shows up, snap the camera to it instead of leaving the map on the
-  // hardcoded Montana placeholder (RANCH_REGION) forever. Runs once per screen mount.
+  // hardcoded placeholder region (RANCH_REGION) forever. Runs once per screen mount.
   const hasAutoFitRef = useRef(false);
   useEffect(() => {
     if (hasAutoFitRef.current) return;

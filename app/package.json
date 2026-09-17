@@ -6,10 +6,12 @@
     "@expo-google-fonts/poppins": "^0.4.1",
     "@expo/ui": "~57.0.18",
     "@expo/vector-icons": "^15.1.1",
+    "@maplibre/maplibre-react-native": "^11.3.10",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@supabase/supabase-js": "^2.111.0",
     "expo": "^57.0.23",
     "expo-audio": "~57.0.5",
+    "expo-build-properties": "~57.0.20",
     "expo-constants": "~57.0.18",
     "expo-device": "~57.0.2",
     "expo-font": "~57.0.4",
@@ -30,11 +32,9 @@
     "react-dom": "19.2.3",
     "react-native": "0.86.3",
     "react-native-gesture-handler": "~2.32.0",
-    "react-native-maps": "1.27.2",
     "react-native-reanimated": "4.5.1",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "~4.26.0",
-    "react-native-svg": "15.15.4",
     "react-native-web": "~0.21.0",
     "react-native-worklets": "0.10.1",
     "zustand": "^5.0.14"
@@ -48,12 +48,11 @@
   },
   "scripts": {
     "start": "expo start",
-    "build": "expo export --platform web",
     "reset-project": "node ./scripts/reset-project.js",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
-    "web": "expo start --web",
-    "lint": "expo lint"
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "lint": "expo lint",
+    "web": "expo start --web"
   },
   "private": true
 }

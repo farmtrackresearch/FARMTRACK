@@ -15,7 +15,7 @@ export const DEMO_PROFILE: Profile = {
   id: 'demo-admin',
   full_name: 'Jordan Hale',
   role: 'admin',
-  farm_name: 'Montana Ranch Operations',
+  farm_name: 'Dumaguete Ranch Operations',
   created_at: ago(60 * 24 * 30),
 };
 

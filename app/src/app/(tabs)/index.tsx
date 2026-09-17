@@ -24,7 +24,7 @@ export default function DashboardScreen() {
     <View style={styles.root}>
       <GradientHeader
         title={`${SectionEmoji.dashboard} FarmTrack`}
-        subtitle={profile?.farm_name ?? 'Montana Ranch Operations'}
+        subtitle={profile?.farm_name ?? 'Dumaguete Ranch Operations'}
         right={
           <View style={{ alignItems: 'flex-end', gap: 8 }}>
             <View style={styles.online}>
