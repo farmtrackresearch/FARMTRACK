@@ -1,0 +1,4 @@
+# macOS
+.DS_Store
+
+# Per-component ignores live in firmware/.gitignore and app/.gitignore
