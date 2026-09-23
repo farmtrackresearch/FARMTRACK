@@ -3,3 +3,10 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Real WiFi/Supabase/gateway credentials - never commit this. See secrets.h.example.
+src/secrets.h
+
+# Raw serial-monitor captures (PlatformIO log2file filter). Large and
+# machine-specific; copy the ones a field test needs into docs/field-tests/runs/.
+logs/

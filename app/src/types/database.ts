@@ -65,6 +65,12 @@ export interface LocationLog {
   latitude: number;
   longitude: number;
   timestamp: string;
+  // Populated by ingest_telemetry() for readings that came in over LoRa.
+  // Null on rows written any other way (manual inserts, seed data).
+  seq: number | null;
+  rssi: number | null;
+  snr: number | null;
+  gateway_id: string | null;
 }
 
 export interface Alert {

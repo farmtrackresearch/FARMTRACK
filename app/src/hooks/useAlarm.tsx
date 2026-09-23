@@ -1,7 +1,7 @@
 import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { Platform, Vibration } from 'react-native';
 import * as Notifications from 'expo-notifications';
-import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
+import { AudioPlayer, createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 
 export type AlarmSeverity = 'warning' | 'breach';
 
@@ -100,31 +100,25 @@ export function AlarmProvider({ children }: { children: ReactNode }) {
   const notifTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const audioTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const maxDurationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const soundInstancesRef = useRef<Map<string, Audio.Sound>>(new Map());
+  const soundInstancesRef = useRef<Map<string, AudioPlayer>>(new Map());
   const audioReadyRef = useRef(false);
 
   useEffect(() => {
     (async () => {
       try {
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: false,
-          staysActiveInBackground: true,
-          interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-          interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-          shouldDuckAndroid: false,
-          playThroughEarpieceAndroid: false,
+        await setAudioModeAsync({
+          allowsRecording: false,
+          playsInSilentMode: true,
+          shouldPlayInBackground: true,
+          interruptionMode: 'doNotMix',
         });
 
         try {
-          const { sound: ws } = await Audio.Sound.createAsync(
-            { uri: WARNING_BEEP_WAV },
-            { shouldPlay: false, volume: 1.0 }
-          );
+          const ws = createAudioPlayer({ uri: WARNING_BEEP_WAV });
+          ws.volume = 1.0;
           soundInstancesRef.current.set('warning', ws);
-          const { sound: bs } = await Audio.Sound.createAsync(
-            { uri: BREACH_BEEP_WAV },
-            { shouldPlay: false, volume: 1.0 }
-          );
+          const bs = createAudioPlayer({ uri: BREACH_BEEP_WAV });
+          bs.volume = 1.0;
           soundInstancesRef.current.set('breach', bs);
           audioReadyRef.current = true;
         } catch (audioErr) {
@@ -162,19 +156,23 @@ export function AlarmProvider({ children }: { children: ReactNode }) {
     return () => {
       stopAllTimers();
       void stopAllSounds();
+      for (const snd of soundInstancesRef.current.values()) {
+        try {
+          snd.remove();
+        } catch {}
+      }
+      soundInstancesRef.current.clear();
+      audioReadyRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const stopAllSounds = useCallback(async () => {
-    const map = soundInstancesRef.current;
-    for (const [key, snd] of map.entries()) {
+    for (const snd of soundInstancesRef.current.values()) {
       try {
-        await snd.stopAsync();
-        await snd.setPositionAsync(0);
-      } catch {
-        void key;
-      }
+        snd.pause();
+        await snd.seekTo(0);
+      } catch {}
     }
   }, []);
 
@@ -183,7 +181,8 @@ export function AlarmProvider({ children }: { children: ReactNode }) {
     const snd = soundInstancesRef.current.get(severity);
     if (!snd) return;
     try {
-      await snd.replayAsync();
+      await snd.seekTo(0);
+      snd.play();
     } catch (err) {
       console.warn('[AlarmProvider] beep play failed:', err);
     }

@@ -2,3 +2,20 @@
 .DS_Store
 
 # Per-component ignores live in firmware/.gitignore and app/.gitignore
+
+# VS Code C/C++ IntelliSense config generated for the firmware project.
+# Contains absolute, machine-local paths - regenerate, never commit.
+# See firmware/README.md: pio project init --ide vscode -e <env>
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/.browse.c_cpp.db*
+.vscode/ipch/
+
+# Claude Code: share only the project agents (.claude/agents/).
+# Personal settings, permissions and local state stay on each machine.
+.claude/*
+!.claude/agents/
+
+# Manuscript drafts. This repository is PUBLIC - unpublished capstone drafts
+# stay off GitHub. Share them with the team through the group drive instead.
+docs/*.pdf

@@ -22,3 +22,11 @@
 #define PIN_LORA_RST   14
 #define PIN_LORA_DIO0  26
 #define LORA_FREQ_HZ   433E6  // SX1278 = 433 MHz. Match your module + local law.
+// Private channel word so collar/gateway ignore other LoRa gear nearby.
+// Both boards must use the same value. 0x34 is the LoRa.h library default -
+// changed here so a neighbor's default-config LoRa device won't be heard.
+#define LORA_SYNC_WORD 0xF3
+
+// ---- Piezo buzzer (collar only) - audio deterrent on fence approach/breach ----
+//   Buzzer +  -> GPIO27     Buzzer -  -> GND
+#define PIN_BUZZER     27

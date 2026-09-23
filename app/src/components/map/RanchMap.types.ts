@@ -16,8 +16,14 @@ export type RanchMapHandle = {
   getCenter: () => MapLatLng;
 };
 
+export type MapAppearance = 'standard' | 'satellite' | 'terrain';
+
 export type RanchMapProps = {
-  mapType: 'standard' | 'satellite';
+  mapType: MapAppearance;
+  /** Omit to hide the appearance picker — the map renders `mapType` either way. */
+  onMapTypeChange?: (next: MapAppearance) => void;
+  /** Latest phone GPS fix. Drives the "center on me" control; null until the first fix. */
+  deviceLocation?: MapLatLng | null;
   locations: LivestockLocation[];
   polygons: RanchPolygon[];
   draftPoints: MapLatLng[];

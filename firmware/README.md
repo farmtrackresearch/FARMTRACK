@@ -1,17 +1,31 @@
 # FarmTrack — Firmware
 
-> Part of the [FarmTrack](../README.md) project. The companion mobile app lives in [`../app`](../app).
+> Part of the [FarmTrack](../README.md) project. The mobile app and database live
+> in [`../app`](../app).
 
-Firmware for an **ESP32-based GPS + LoRa field tracker**, intended for
-locating farm assets, livestock, or equipment where there is no cellular or
-Wi-Fi coverage. A NEO-6M gets a position fix, and an SX1278 LoRa radio relays
-short messages from a roaming node to a base node over long range.
+Firmware for the two ESP32 boards in FarmTrack:
 
-This repository currently holds the **hardware bring-up / component tests** —
-one small, self-contained program per component. Each test flashes on its own,
-prints clearly to the serial monitor, tells you exactly what is wired wrong,
-and can be stopped/resumed from the keyboard or the BOOT button. Use these to
-prove every part of the hardware works before wiring the full tracker.
+- **Collar** — worn by the animal. Reads GPS, sends the position over LoRa, and
+  beeps when the animal is near or past a fence.
+- **Gateway** — stays near WiFi. Receives the collar's LoRa packets, uploads them
+  to Supabase, and sends the fence state back to the collar.
+
+There are also **small test programs**, one per hardware part. Run them first to
+prove each part works before you flash the collar and gateway.
+
+## Contents
+
+1. [What you need](#1-what-you-need)
+2. [Open the project](#2-open-the-project)
+3. [The programs (environments)](#3-the-programs-environments)
+4. [Wiring](#4-wiring)
+5. [How to flash and watch output](#5-how-to-flash-and-watch-output)
+6. [Test each part, step by step](#6-test-each-part-step-by-step)
+7. [Collar and gateway (the real system)](#7-collar-and-gateway-the-real-system)
+8. [What changed in this version](#8-what-changed-in-this-version)
+9. [Folder layout](#9-folder-layout)
+10. [Troubleshooting](#10-troubleshooting)
+11. [License](#11-license)
 
 ---
 
@@ -21,65 +35,94 @@ prove every part of the hardware works before wiring the full tracker.
 
 | Part | Notes |
 |------|-------|
-| ESP32 DevKit board | DOIT ESP32 DEVKIT v1, 30-pin. Most CH340-based clones work. |
-| NEO-6M GPS module | With patch antenna. Needs a clear view of the sky. |
-| SX1278 LoRa module | 433 MHz (e.g. Ra-01 / Ra-02). **Must match your antenna and local radio regulations.** |
-| LoRa antenna | 433 MHz spring or SMA whip. **Attach before powering the radio.** |
-| 2× ESP32 boards | Only for the LoRa link test (one sender, one receiver). A single board covers the ESP32 and GPS tests. |
-| Jumper wires, USB cable | Data-capable USB cable, not charge-only. |
+| 2× ESP32 DevKit v1 (30-pin) | One for the collar, one for the gateway. Most CH340 clones work. |
+| NEO-6M GPS module + antenna | Collar only. Needs open sky to get a fix. |
+| 2× SX1278 LoRa module, 433 MHz (Ra-01 / Ra-02) | One per board. |
+| 2× 433 MHz LoRa antenna | **Attach before powering.** |
+| Piezo buzzer | Collar only. |
+| Jumper wires, 2× USB **data** cables | Charge-only cables will not work. |
 
 ### Software
 
-- [Visual Studio Code](https://code.visualstudio.com/) + the
-  [PlatformIO IDE](https://platformio.org/install/ide?install=vscode) extension
-  (recommended), **or** [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/index.html) (`pio`) on the command line.
-- USB-serial driver for your board's chip:
-  - **CH340/CH341** (most clones): install the WCH driver for your OS.
-  - **CP2102** (some boards): install the Silicon Labs VCP driver.
-- PlatformIO downloads the ESP32 toolchain, the Arduino framework, and all
-  libraries automatically on the first build — no manual library installs.
+1. [Visual Studio Code](https://code.visualstudio.com/).
+2. The **PlatformIO IDE** extension in VS Code (Extensions panel → search
+   "PlatformIO IDE" → Install). Do **not** install the "pioarduino" extension —
+   it clashes with PlatformIO.
+3. The USB driver for your board's USB chip:
+   - **CH340 / CH341** (most clones) → the WCH CH340 driver.
+   - **CP2102** → the Silicon Labs CP210x driver.
 
-Libraries pulled in automatically (declared in [platformio.ini](platformio.ini)):
+PlatformIO downloads the ESP32 toolchain and all libraries by itself on the first
+build (this takes a few minutes the first time). Libraries used, from
+[platformio.ini](platformio.ini):
 
-- `mikalhart/TinyGPSPlus` — NMEA parsing for the GPS test.
-- `sandeepmistry/LoRa` — SX127x driver for the LoRa tests.
+- `mikalhart/TinyGPSPlus` — reads GPS data
+- `sandeepmistry/LoRa` — drives the SX1278
+- `bblanchon/ArduinoJson` — builds the gateway's upload message
 
 ---
 
-## 2. Get the code
+## 2. Open the project
+
+1. Get the code (see the [main README](../README.md#step-2--get-the-code)).
+2. In VS Code: **File → Open Folder… → pick the `firmware/` folder.**
+   Open `firmware/`, not the repo root, or PlatformIO will not find the project.
+3. Wait for PlatformIO to finish loading (bottom status bar).
+
+**Red squiggles on `#include` lines?** That is only the editor. Fix it with (from
+inside `firmware/`):
 
 ```bash
-git clone https://github.com/farmtrackresearch/FARMTRACK.git
-cd FARMTRACK
+pio project init --ide vscode -e collar
 ```
 
-Then open the folder in VS Code (PlatformIO will detect the project), or use the
-`pio` CLI as shown below.
+The files it creates are machine-specific and git-ignored — every person makes
+their own.
 
 ---
 
-## 3. Wiring
+## 3. The programs (environments)
 
-All pin assignments live in one place: [src/pins.h](src/pins.h). Wire the board
-to match, or edit that file to match your wiring.
+Each program is a PlatformIO **environment**. Only one `.cpp` file is built per
+environment.
 
-### NEO-6M GPS → ESP32 (UART2)
+| Environment | What it does | Source |
+|-------------|--------------|--------|
+| `esp32`     | Board check: serial output + board info | [src/test_esp32.cpp](src/test_esp32.cpp) |
+| `gps`       | GPS check: satellites and fix | [src/test_gps.cpp](src/test_gps.cpp) |
+| `lora_tx`   | LoRa test sender | [src/test_lora_tx.cpp](src/test_lora_tx.cpp) |
+| `lora_rx`   | LoRa test receiver | [src/test_lora_rx.cpp](src/test_lora_rx.cpp) |
+| `gps_baud`  | Diagnostic: finds which baud rate the GPS talks at | [src/test_gps_baud.cpp](src/test_gps_baud.cpp) |
+| `gps_power` | Diagnostic: shows if the GPS keeps restarting from low power | [src/test_gps_power.cpp](src/test_gps_power.cpp) |
+| **`collar`**  | **The real collar program** | [src/collar.cpp](src/collar.cpp) |
+| **`gateway`** | **The real gateway program** | [src/gateway.cpp](src/gateway.cpp) |
+
+Shared files: [src/pins.h](src/pins.h) (every pin number) and
+[src/packet.h](src/packet.h) (the radio message format).
+
+---
+
+## 4. Wiring
+
+All pin numbers live in [src/pins.h](src/pins.h). Wire to match it.
+
+### NEO-6M GPS → ESP32 (collar)
 
 | GPS pin | ESP32 pin |
 |---------|-----------|
-| VCC | 5V / VIN |
+| VCC | **VIN (5 V)** — not 3V3 |
 | GND | GND |
-| TX  | GPIO16 (RX) |
-| RX  | GPIO17 (TX) |
+| TX  | GPIO16 |
+| RX  | GPIO17 |
 
-Default baud is 9600 (NEO-6M factory setting). The firmware only ever *reads*
-from the module, so its stored configuration cannot be corrupted.
+> On 3V3 the GPS does not get enough power and restarts over and over, so it
+> never gets a fix. Always use VIN.
 
-### SX1278 LoRa → ESP32 (VSPI)
+### SX1278 LoRa → ESP32 (collar **and** gateway)
 
 | LoRa pin | ESP32 pin |
 |----------|-----------|
-| VCC  | **3V3 only — never 5V** |
+| VCC  | **3V3 only — never 5 V** |
 | GND  | GND |
 | SCK  | GPIO18 |
 | MISO | GPIO19 |
@@ -88,154 +131,276 @@ from the module, so its stored configuration cannot be corrupted.
 | RST  | GPIO14 |
 | DIO0 | GPIO26 |
 
-**⚠ Safety**
+> **Note about the current prototype:** on the team's existing boards DIO0 is
+> wired to **GPIO2** instead of GPIO26. The firmware works either way, because
+> it never uses DIO0 and leaves GPIO2 (the blue LED pin) untouched. Side effect:
+> the blue LED does not blink in the collar, gateway, or GPS test. New boards
+> should use GPIO26.
 
-- Power the SX1278 from **3.3 V only**. 5 V will destroy it.
-- **Attach the antenna before powering or transmitting.** Transmitting with no
-  antenna can burn out the power amplifier.
-- 433 MHz is used in the code (`LORA_FREQ_HZ` in `pins.h`). Change it to a band
-  that is legal where you live and that matches your module and antenna.
+### Piezo buzzer → ESP32 (collar)
 
-### On-board (no wiring)
+| Buzzer | ESP32 pin |
+|--------|-----------|
+| + | GPIO27 |
+| − | GND |
 
-- GPIO2 — blue LED (status).
-- GPIO0 — BOOT button, used as a stop/resume control.
+### On the board (no wiring)
+
+- GPIO0 — BOOT button, used to stop / resume the test programs.
+
+### ⚠ Safety
+
+- The SX1278 takes **3.3 V only**. 5 V destroys it.
+- **Attach the antenna before powering the board.** Transmitting without one can
+  burn out the radio.
+- The code uses **433 MHz** (`LORA_FREQ_HZ` in `pins.h`). Make sure that is legal
+  where you are and matches your module and antenna.
 
 ---
 
-## 4. Build, flash, and monitor
+## 5. How to flash and watch output
 
-The project defines four PlatformIO environments — one per test. Only one test
-`.cpp` is compiled per environment (via `build_src_filter`), so each can have its
-own `setup()` / `loop()`.
+### In VS Code (easiest)
 
-| Environment | Test | Source |
-|-------------|------|--------|
-| `esp32`   | Board sanity check (LED + serial) | [src/test_esp32.cpp](src/test_esp32.cpp) |
-| `gps`     | NEO-6M GPS fix | [src/test_gps.cpp](src/test_gps.cpp) |
-| `lora_tx` | SX1278 LoRa sender | [src/test_lora_tx.cpp](src/test_lora_tx.cpp) |
-| `lora_rx` | SX1278 LoRa receiver | [src/test_lora_rx.cpp](src/test_lora_rx.cpp) |
+1. Plug the board in by USB.
+2. Click the environment name in the bottom status bar (e.g. `env:esp32`) and
+   pick the one you want.
+3. Click **→ Upload** (arrow icon) in the bottom bar.
+4. Click **🔌 Serial Monitor** (plug icon) to see the output.
 
-### Command line
+### From the terminal (inside `firmware/`)
 
 ```bash
-pio run -e esp32   -t upload -t monitor      # board sanity
-pio run -e gps     -t upload -t monitor      # GPS
-pio run -e lora_tx -t upload -t monitor      # LoRa sender  (board A)
-pio run -e lora_rx -t upload -t monitor      # LoRa receiver (board B)
+pio run -e <environment> -t upload -t monitor
 ```
 
-Add `--upload-port /dev/tty.XXXX` (macOS/Linux) or `--upload-port COMx`
-(Windows) if PlatformIO does not auto-detect the board.
+For example `pio run -e gps -t upload -t monitor`.
 
-### VS Code / PlatformIO IDE
+If PlatformIO picks the wrong board, name the port:
 
-1. Pick the environment in the PlatformIO status bar (bottom).
-2. Use the **Build**, **Upload**, and **Serial Monitor** buttons.
+```bash
+pio device list                                   # shows the ports
+pio run -e gps -t upload --upload-port /dev/cu.usbserial-XXXX   # macOS
+pio run -e gps -t upload --upload-port COM5                     # Windows
+```
 
 ### Serial monitor
 
-- Speed: **115200 baud** (set by `monitor_speed`).
-- Upload speed is pinned to 115200 — CH340 on macOS is unreliable faster.
-- Exit the PlatformIO monitor with `Ctrl+C`.
+- Speed is **115200** (already set in `platformio.ini`).
+- Exit with `Ctrl+C`.
+- To **save** the output to a file (for field tests), use:
 
-### Controls (all tests)
+  ```bash
+  pio device monitor -e <environment> -f time -f log2file
+  ```
+
+  The log file is written to the folder you ran the command from. Keep scratch
+  logs in `firmware/logs/` (git-ignored), and copy any log a field test needs
+  into `docs/field-tests/runs/<run>/`.
+
+### Stop / resume (test programs)
 
 | Input | Action |
 |-------|--------|
-| `s` / `S` in the monitor, or press **BOOT** | Stop (LED off) |
-| `r` / `R` in the monitor, or press **BOOT** again | Resume |
+| Type `s` in the monitor, or press **BOOT** | Stop |
+| Type `r` in the monitor, or press **BOOT** again | Resume |
 
 ---
 
-## 5. What each test does
+## 6. Test each part, step by step
 
-### `esp32` — board sanity
-No external parts. Prints chip model, revision, core count, flash size, and free
-heap once, then a `tick` line every second while the on-board LED blinks at
-1 Hz. Confirms USB serial, the LED, and a clean boot.
+Do these in order. Move on only when the step passes.
 
-### `gps` — NEO-6M
-Prints a status line every 2 seconds:
+### Step 1 — Board check (`esp32`)
 
-- **Searching:** satellite count and byte/sentence/checksum counters. If
-  `rxBytes` stays at 0 it is a wiring/power fault (`TX → GPIO16`, GND, power);
-  if bytes arrive but no sentences pass, suspect a baud mismatch.
-- **Fix:** `MAPS: <lat>, <lng>` plus a ready-to-click Google Maps link. The LED
-  goes solid on a fix, blinks while searching.
+No wiring needed. Flash `esp32`.
 
-A cold start outdoors typically takes **1–3 minutes**. The module needs a real
-sky view — it will not fix indoors or under cover.
+✅ **Pass:** you see the chip model, flash size and free memory, then a `tick`
+line every second.
 
-### `lora_tx` / `lora_rx` — SX1278 link
-Flash `lora_tx` to one board and `lora_rx` to another.
+### Step 2 — GPS check (`gps`)
 
-- **Sender** transmits `FarmTrack #<n>` once per second and blinks the LED on
-  each send.
-- **Receiver** prints every packet with its length, **RSSI** (dBm — closer to 0
-  is stronger) and **SNR**, and pulses the LED.
+Wire the GPS ([table above](#neo-6m-gps--esp32-collar)). Flash `gps`. Take it
+**outside** with open sky and wait **1–3 minutes**.
 
-Both sides must use the same frequency. If `LoRa.begin()` fails, the test keeps
-retrying and prints wiring hints instead of hanging — check 3V3 power, the SPI
-lines (18/19/23), and NSS/RST/DIO0.
+✅ **Pass:** a `MAPS: <lat>, <lng>` line with a Google Maps link.
+
+While it searches it prints satellites and counters:
+
+- `rxBytes` stays at 0 → wiring or power problem (check TX → GPIO16, GND, VIN).
+- `rxBytes` climbs but `sentencesOk` stays 0 → run Step 2a.
+
+**Step 2a — only if the GPS check fails.** Flash `gps_baud`: the right baud rate
+shows lots of `$` and readable text. Then flash `gps_power`: if every burst starts
+with `u-blox ag` and repeats, the GPS is restarting from low power — move its VCC
+to VIN and use a better USB cable or power source.
+
+### Step 3 — LoRa link (`lora_tx` + `lora_rx`)
+
+Wire the SX1278 to **both** boards and attach both antennas. Flash `lora_tx` to
+board A and `lora_rx` to board B.
+
+✅ **Pass:** board B prints `FarmTrack #1`, `#2`, … with an **RSSI** (closer to 0
+is stronger) and **SNR**.
+
+If it says `LoRa FAILED`, check 3V3 power, SCK/MISO/MOSI (18/19/23), and
+NSS/RST.
 
 ---
 
-## 6. Repository layout
+## 7. Collar and gateway (the real system)
+
+### Step 1 — Add your secrets (gateway)
+
+Inside the `firmware/` folder, copy the template:
+
+```bash
+cp src/secrets.h.example src/secrets.h
+```
+
+Open `src/secrets.h` and fill in:
+
+| Setting | What to put |
+|---------|-------------|
+| `WIFI_SSID` / `WIFI_PASSWORD` | The WiFi the gateway will use (2.4 GHz — the ESP32 has no 5 GHz) |
+| `SUPABASE_URL` | Supabase project URL (ask the project owner) |
+| `SUPABASE_ANON_KEY` | Supabase anon / publishable key (ask the project owner) |
+| `GATEWAY_SECRET` | The gateway secret (ask the project owner) |
+
+`secrets.h` is git-ignored. **Never commit it** — this repository is public.
+
+### Step 2 — Flash the gateway
+
+Plug in the gateway board and flash `gateway`.
+
+✅ **Pass:** `LoRa OK, listening...` and then a WiFi connected message.
+
+### Step 3 — Flash the collar
+
+Plug in the collar board and flash `collar`. At the top of the output it prints:
 
 ```
-FARMTRACK/
-└── firmware/           # <-- this directory (open it as the PlatformIO project)
-    ├── platformio.ini  # environments, board, libraries, monitor/upload speed
-    ├── src/
-    │   ├── pins.h          # single source of truth for every pin + wiring notes
-    │   ├── test_esp32.cpp  # esp32   env
-    │   ├── test_gps.cpp    # gps     env
-    │   ├── test_lora_tx.cpp# lora_tx env
-    │   └── test_lora_rx.cpp# lora_rx env
-    ├── include/        # (PlatformIO placeholder) shared headers
-    ├── lib/            # (PlatformIO placeholder) private libraries
-    ├── test/           # (PlatformIO placeholder) unit tests
-    └── "TEST CODES /"  # scratch / earlier drafts, not built
+=== FarmTrack COLLAR  id=FT-XXXXXXXX ===
 ```
 
-> Open the `firmware/` folder directly in VS Code / PlatformIO — pointing it at
-> the repo root will not detect the project.
+Write that ID down.
 
-`.pio/` (build output) and the auto-generated `.vscode/` files are
-git-ignored.
+### Step 4 — Register the collar in Supabase
+
+The collar's ID must be in the database and paired with an animal, or no alerts
+will ever fire. Follow [app/README.md → Register a collar](../app/README.md#register-a-collar-and-pair-it-with-an-animal).
+
+### Step 5 — Watch it work
+
+Take the collar outside. Every send, the collar prints
+`TX seq=… fix=… sats=… lat=… lng=…` and the gateway prints
+`RX from … seq=… rssi=… snr=…` followed by `TX reply state=…`.
+
+| `state` | Meaning | Collar sound |
+|---------|---------|--------------|
+| 0 | Safe | silent |
+| 1 | Warning — near a fence edge | 1 short beep |
+| 2 | Breach — outside every fence | 3 sharp beeps |
+
+> The collar currently sends every **30 seconds** (a temporary setting for GPS
+> diagnosis). Normal is 3 seconds — see `SEND_INTERVAL_MS` in
+> [src/collar.cpp](src/collar.cpp).
+
+### Radio settings (both boards must match)
+
+| Setting | Value | Where |
+|---------|-------|-------|
+| Frequency | 433 MHz | `LORA_FREQ_HZ` in `pins.h` |
+| Sync word | `0xF3` (private — ignores other LoRa devices) | `LORA_SYNC_WORD` in `pins.h` |
+| Spreading factor | 9 | `collar.cpp` and `gateway.cpp` |
+| CRC | on (drops corrupted packets) | `collar.cpp` and `gateway.cpp` |
+
+If you change any of these, re-flash **both** boards. The `lora_tx` / `lora_rx`
+tests use library defaults, so they do not talk to the collar or gateway.
 
 ---
 
-## 7. Troubleshooting
+## 8. What changed in this version
 
-| Symptom | Likely cause / fix |
-|---------|--------------------|
-| Board not found / no upload port | Wrong or missing USB-serial driver; charge-only USB cable; try another port or cable. Pass `--upload-port` explicitly. |
-| Upload fails at "Connecting…" | Hold **BOOT** while upload starts (some boards); lower `upload_speed`; unplug other serial monitors. |
-| Garbled serial output | Monitor not at 115200. |
-| GPS: `rxBytes` stays 0 | GPS `TX` not on `GPIO16`, no common GND, or module unpowered. |
-| GPS: bytes arrive, no fix | Needs open sky; wait 1–3 min for cold start. |
-| GPS: bytes but no valid NMEA | Baud mismatch — try 38400 in `pins.h`. |
-| LoRa: `LoRa FAILED` | Not on 3V3; SPI miswired (18/19/23); NSS/RST/DIO0 wrong. |
-| LoRa: sends OK but nothing received | Frequency mismatch between the two boards; antenna missing; out of range. |
+**Added**
+
+- `collar` and `gateway` environments — the real system ([collar.cpp](src/collar.cpp),
+  [gateway.cpp](src/gateway.cpp)).
+- [packet.h](src/packet.h) — shared 20-byte uplink / 6-byte reply format. The
+  uplink also carries the satellite count.
+- [secrets.h.example](src/secrets.h.example) — template for gateway credentials.
+- `gps_baud` and `gps_power` diagnostic environments.
+- `pins.h`: `PIN_BUZZER` (GPIO27) and `LORA_SYNC_WORD` (`0xF3`).
+
+**Changed**
+
+- LoRa payload CRC on, spreading factor 7 → 9, private sync word — on collar and
+  gateway.
+- GPS power moved to **VIN (5 V)**.
+- GPIO2 / blue LED no longer driven in `collar`, `gateway`, and `gps` (see the
+  wiring note in [section 4](#4-wiring)).
+- `gps` test now turns off WiFi/Bluetooth, slows the CPU, and puts the LoRa radio
+  to sleep so the GPS has enough power.
+- Collar send interval temporarily 30 s (normal: 3 s).
+- `.vscode/extensions.json` now warns against the `pioarduino` extension.
+
+**Removed**
+
+- `TEST CODES /gps.cpp` — an old draft that was never built.
+
+**Now git-ignored**
+
+- `src/secrets.h` (real keys) and `logs/` (serial-monitor captures).
 
 ---
 
-## 8. Roadmap
+## 9. Folder layout
 
-The component tests are step one. Planned next: a combined tracker node
-(GPS fix → LoRa uplink with a compact packet format), a base node that logs
-positions, low-power sleep between fixes, and a simple map view.
+```
+firmware/                  <- open THIS folder in VS Code
+├── platformio.ini         environments, board, libraries, speeds
+├── src/
+│   ├── pins.h             every pin number + wiring notes
+│   ├── packet.h           collar <-> gateway radio message format
+│   ├── secrets.h.example  template - copy to secrets.h (git-ignored)
+│   ├── collar.cpp         collar   env
+│   ├── gateway.cpp        gateway  env
+│   ├── test_esp32.cpp     esp32    env
+│   ├── test_gps.cpp       gps      env
+│   ├── test_gps_baud.cpp  gps_baud env
+│   ├── test_gps_power.cpp gps_power env
+│   ├── test_lora_tx.cpp   lora_tx  env
+│   └── test_lora_rx.cpp   lora_rx  env
+├── logs/                  saved serial logs (git-ignored)
+├── include/ lib/ test/    PlatformIO placeholders
+└── .pio/                  build output (git-ignored)
+```
 
 ---
 
-## 9. Research use and license
+## 10. Troubleshooting
 
-FarmTrack is a research / educational project (contact:
-`farmtrack.research@gmail.com`). Licensed under the MIT License — see
-[../LICENSE](../LICENSE).
+| Problem | Try this |
+|---------|----------|
+| Board not found / no upload port | Install the CH340 or CP2102 driver; use a data USB cable; try another port. Pass `--upload-port`. |
+| Upload stuck at "Connecting…" | Hold **BOOT** while the upload starts; close other serial monitors. |
+| Garbled text in the monitor | Monitor is not at 115200. |
+| Red squiggles on `#include` | Run `pio project init --ide vscode -e collar` inside `firmware/`. |
+| `fatal error: secrets.h: No such file` | Do [section 7, Step 1](#step-1--add-your-secrets-gateway). |
+| GPS: `rxBytes` stays 0 | GPS TX not on GPIO16, no shared GND, or GPS not powered. |
+| GPS: bytes arrive but `sentencesOk` stays 0 | Power: GPS VCC must be on VIN. Run `gps_power` to confirm. |
+| GPS: no fix | Go outside with open sky, wait 1–3 min. It will not fix indoors. |
+| `LoRa FAILED` | Not on 3V3; SPI wires (18/19/23) wrong; NSS/RST wrong. |
+| Gateway hears nothing | Both boards on the new firmware? Antennas on? Too far apart (RSSI near −95)? |
+| Gateway: `upload failed, HTTP 401/403` | Wrong anon key or gateway secret in `secrets.h`. |
+| Gateway: `HTTP -1`, `-11`, or `-29312` after ~20 min | Known issue (see the [main README](../README.md#known-issues)). Press the gateway's EN/reset button. |
+| Gateway: "Brownout detector was triggered" | Weak USB power. Use a powered hub or a better cable/charger. |
+| Collar prints `no reply from gateway` | Gateway offline, not on WiFi, or out of range. |
 
-When operating the LoRa radio you are responsible for complying with the
-radio-spectrum regulations in your country (frequency band, duty cycle, and
-transmit power).
+---
+
+## 11. License
+
+MIT — see [../LICENSE](../LICENSE). When operating the LoRa radio you are
+responsible for complying with the radio-spectrum regulations in your country
+(frequency band, duty cycle, and transmit power).

@@ -15,6 +15,9 @@
 // ===========================================================================
 
 #include <Arduino.h>
+#include <WiFi.h>
+#include <SPI.h>
+#include <LoRa.h>
 #include <TinyGPSPlus.h>
 #include "pins.h"
 
@@ -26,7 +29,6 @@ static bool running = true;
 // --------------------------- stop / resume ---------------------------------
 static void stopProgram() {
   running = false;
-  digitalWrite(PIN_LED, LOW);
   Serial.println(">> STOPPED (send 'r' or press BOOT to resume)");
 }
 static void resumeProgram() {
@@ -75,21 +77,41 @@ static void gpsPrintStatus() {
   }
 }
 
+// Disabled: GPIO2 carries the SX1278's DIO0 on this build, so driving it
+// fights the radio's output and disturbs the 3V3 rail the GPS runs from.
+// Re-enable only once DIO0 has been moved to GPIO26 as pins.h specifies.
 static void updateLed() {
-  static uint32_t last = 0;
-  static bool on = false;
-  if (gpsHasFix()) { digitalWrite(PIN_LED, HIGH); return; }
-  if (millis() - last >= 250) { last = millis(); on = !on; digitalWrite(PIN_LED, on); }
 }
 
 // ------------------------------ setup/loop --------------------------------
 void setup() {
   Serial.begin(115200);
-  pinMode(PIN_LED, OUTPUT);
+  // NOT an output: on this build the SX1278's DIO0 is wired to GPIO2, which is
+  // also the onboard LED pin. Driving it while the radio drives it too shorts
+  // two push-pull outputs together and slams the 3V3 rail - which the GPS also
+  // sits on. Left as an input, the contention disappears.
+  pinMode(PIN_LED, INPUT);
   pinMode(PIN_BOOT_BTN, INPUT_PULLUP);
   delay(1000);
 
   Serial.println("\n=== FarmTrack TEST 2 - NEO-6M GPS ===");
+
+  // Shed load so the 5V rail can hold the GPS up. A sagging rail makes the
+  // NEO-6M reboot before it can ever hold reception long enough for a fix.
+  WiFi.mode(WIFI_OFF);
+  btStop();
+  setCpuFrequencyMhz(80);
+
+  // The radio is not used by this test, but a previous sketch may have left it
+  // idling in receive, drawing ~10mA. On a marginal rail that alone is the
+  // difference between the GPS completing sentences and reboot-looping, so put
+  // it to sleep explicitly rather than inheriting whatever state it was in.
+  LoRa.setPins(PIN_LORA_SS, PIN_LORA_RST, PIN_LORA_DIO0);
+  if (LoRa.begin(LORA_FREQ_HZ)) {
+    LoRa.sleep();
+    Serial.println("SX1278 -> sleep (radio load removed)");
+  }
+
   gpsUart.begin(GPS_BAUD, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
   Serial.printf("GPS: UART2  RX=GPIO%d  TX=GPIO%d  @ %d baud\n",
                 PIN_GPS_RX, PIN_GPS_TX, GPS_BAUD);

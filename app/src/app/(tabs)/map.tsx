@@ -9,7 +9,7 @@ import { CreateFenceModal, type BoundaryTemplate } from '@/components/map/Create
 import { FenceDrawingPanel } from '@/components/map/FenceDrawingPanel';
 import { FenceListPanel, UndoFenceToast } from '@/components/map/FenceListPanel';
 import RanchMap from '@/components/map/RanchMap';
-import type { RanchMapHandle } from '@/components/map/RanchMap.types';
+import type { MapAppearance, RanchMapHandle } from '@/components/map/RanchMap.types';
 import { SaveBoundaryModal } from '@/components/map/SaveBoundaryModal';
 import { Colors, RANCH_REGION, Radius, Shadows, Spacing, Typography } from '@/constants/theme';
 import { SectionEmoji } from '@/constants/navigation';
@@ -17,6 +17,7 @@ import {
   evaluateAgainstFences,
   FenceEval,
   geoJsonToLatLngs,
+  haversineMeters,
   isSelfIntersecting,
   makeEllipseTemplate,
   makeRectangleTemplate,
@@ -49,7 +50,7 @@ export default function MapScreen() {
   const { locations, geofences, saveGeofence, deleteGeofence, isAdmin, recordFenceCrossing } = useFarm();
   const { triggerAlarm, dismissAlarm, activeAlarm } = useAlarm();
 
-  const [mapType, setMapType] = useState<'standard' | 'satellite'>('satellite');
+  const [mapType, setMapType] = useState<MapAppearance>('standard');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [drawing, setDrawing] = useState(false);
   const [draftPoints, setDraftPoints] = useState<MapLatLng[]>([]);
@@ -96,27 +97,55 @@ export default function MapScreen() {
   const selfIntersecting = useMemo(() => isSelfIntersecting(draftPoints), [draftPoints]);
   const draftAreaHectares = useMemo(() => polygonAreaHectares(draftPoints), [draftPoints]);
 
-  // `initialRegion` on the native map only applies once, at first mount — before
-  // fences/livestock have usually finished loading from Supabase. Once real data
-  // shows up, snap the camera to it instead of leaving the map on the
-  // hardcoded Montana placeholder (RANCH_REGION) forever. Runs once per screen mount.
+  // The camera's initial bounds only apply once, at first mount — before GPS has
+  // a fix and before fences/livestock have loaded from Supabase. Two effects move
+  // it off the hardcoded Montana placeholder (RANCH_REGION), each running once.
+
+  // A stationary animal still gets a brand-new GPS estimate every 3 seconds, and
+  // consumer GPS carries a few metres of random error, so the marker crawls
+  // around even when nothing has moved. Hold the drawn position until the
+  // animal has genuinely travelled further than that noise floor.
+  //
+  // Display only: detect_geofence_events() still evaluates every raw reading
+  // server-side, so breach and warning alerts are unaffected by this.
+  const STABLE_THRESHOLD_M = 6;
+  const heldPositionsRef = useRef<Record<string, MapLatLng>>({});
+  const stableLocations = useMemo(
+    () =>
+      locations.map((l) => {
+        if (l.latitude == null || l.longitude == null) return l;
+        const incoming: MapLatLng = { latitude: l.latitude, longitude: l.longitude };
+        const held = heldPositionsRef.current[l.livestock_id];
+        if (held && haversineMeters(held, incoming) < STABLE_THRESHOLD_M) {
+          return { ...l, latitude: held.latitude, longitude: held.longitude };
+        }
+        heldPositionsRef.current[l.livestock_id] = incoming;
+        return l;
+      }),
+    [locations]
+  );
+
+  // Frame the collars, not the phone. The phone is whoever is holding it, not a
+  // tracked animal; opening the map on it pushes the collars off screen, which
+  // is the one thing this screen exists to show. Fence corners are included so
+  // an animal and the fence it is being judged against are visible together.
+  // The "center on me" control still recenters on the phone on demand.
   const hasAutoFitRef = useRef(false);
   useEffect(() => {
     if (hasAutoFitRef.current) return;
+    const collarCoords = stableLocations
+      .filter((l) => l.latitude != null && l.longitude != null)
+      .map((l) => ({ latitude: l.latitude as number, longitude: l.longitude as number }));
     const fenceCoords = polygons.flatMap((p) => p.coords);
-    const coords =
-      fenceCoords.length > 0
-        ? fenceCoords
-        : locations
-            .filter((l) => l.latitude != null && l.longitude != null)
-            .map((l) => ({ latitude: l.latitude as number, longitude: l.longitude as number }));
+    // Fences alone are still a sensible frame before any collar has reported.
+    const coords = collarCoords.length > 0 ? [...collarCoords, ...fenceCoords] : fenceCoords;
     if (coords.length === 0) return;
     hasAutoFitRef.current = true;
     mapRef.current?.fitToCoordinates(coords, {
       edgePadding: { top: 80, right: 60, bottom: 180, left: 60 },
       animated: false,
     });
-  }, [polygons, locations]);
+  }, [polygons, stableLocations]);
 
   useEffect(() => {
     if (createFence === '1' && isAdmin) {
@@ -496,19 +525,15 @@ export default function MapScreen() {
             </Text>
           </View>
         </View>
-        <Pressable
-          style={styles.satBtn}
-          onPress={() => setMapType((t) => (t === 'satellite' ? 'standard' : 'satellite'))}>
-          <MaterialCommunityIcons name="layers" size={16} color="#fff" />
-          <Text style={styles.satText}>{mapType === 'satellite' ? 'Satellite' : 'Standard'}</Text>
-        </Pressable>
       </View>
 
       <View style={styles.mapWrap}>
         <RanchMap
           ref={mapRef}
           mapType={mapType}
-          locations={locations}
+          onMapTypeChange={setMapType}
+          deviceLocation={deviceLoc}
+          locations={stableLocations}
           polygons={polygons}
           draftPoints={draftPoints}
           drawing={drawing}
@@ -628,16 +653,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: Colors.primaryDark,
   },
-  satBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: Colors.primary,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: Radius.md,
-  },
-  satText: { color: '#fff', fontWeight: '700', fontSize: 13 },
   mapWrap: { flex: 1 },
   fab: {
     position: 'absolute',

@@ -47,7 +47,7 @@ export function FenceDrawingPanel({
           </View>
           <Text style={styles.status}>
             {pointCount} point{pointCount === 1 ? '' : 's'} placed ·{' '}
-            <Text style={styles.hint}>drag vertices to adjust</Text>
+            <Text style={styles.hint}>drag a point to adjust · tap to remove</Text>
           </Text>
         </View>
         <Pressable onPress={onClose} hitSlop={8} style={styles.iconBtn}>
