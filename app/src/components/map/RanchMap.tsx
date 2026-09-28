@@ -1,13 +1,7 @@
-import {
-  forwardRef,
-  useCallback,
-  useImperativeHandle,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import { forwardRef, useCallback, useImperativeHandle, useMemo, useState } from 'react';
 import {
   DimensionValue,
+  GestureResponderEvent,
   LayoutChangeEvent,
   PanResponder,
   Pressable,
@@ -17,28 +11,32 @@ import {
 } from 'react-native';
 import Svg, { Line, Polygon as SvgPolygon, Polyline } from 'react-native-svg';
 
-import { MapLegend } from '@/components/map/MapLegend';
-import type { RanchMapHandle, RanchMapProps } from '@/components/map/RanchMap.types';
-import { Colors, RANCH_REGION, Shadows } from '@/constants/theme';
-import { statusMarkerColor } from '@/lib/utils';
+import type { MapAppearance, RanchMapHandle, RanchMapProps } from '@/components/map/RanchMap.types';
+import { StatusMeta, statusKey } from '@/components/ui/tones';
+import { Colors, FontFamily, MapPalette, RANCH_REGION, Radius, Shadows } from '@/constants/theme';
 import type { MapLatLng } from '@/types/database';
 
 type Size = { width: number; height: number };
 
-const DRAFT_STROKE = '#6FCFEE';
-const DRAFT_FILL = 'rgba(111,207,238,0.28)';
-const GHOST_STROKE = 'rgba(111,207,238,0.7)';
+const DRAFT_STROKE = MapPalette.draftStroke;
+const DRAFT_FILL = MapPalette.draftFill;
+const GHOST_STROKE = MapPalette.draftGhost;
 
-const FENCE_HALO = '#FFFFFF';
+const FENCE_HALO = MapPalette.fenceHalo;
 const FENCE_HALO_WIDTH = 7;
-const FENCE_STROKE = '#2E7D32';
+const FENCE_STROKE = MapPalette.fenceStroke;
 const FENCE_STROKE_WIDTH = 4;
-const FENCE_FILL = 'rgba(46,125,50,0.24)';
+const FENCE_FILL = MapPalette.fenceFill;
 
-const WARNING_HALO = 'rgba(255,152,0,0.35)';
+const WARNING_HALO = MapPalette.warnHalo;
 const WARNING_HALO_WIDTH = 14;
-const WARNING_STROKE = '#F57C00';
+const WARNING_STROKE = MapPalette.warnStroke;
 const WARNING_STROKE_WIDTH = 3;
+
+/** Tile credit shown by the map screen. The web build has no map imagery. */
+export function mapAttribution(_mapType: MapAppearance): string {
+  return 'Web preview map · open the app on a phone for map imagery';
+}
 
 function cleanPolygonCoords(coords: MapLatLng[]): MapLatLng[] {
   if (coords.length < 2) return coords;
@@ -78,6 +76,9 @@ function computeRegion(bounds: Bounds, padRatio = 0.3) {
 
 type Region = ReturnType<typeof computeRegion>;
 
+// Not clamped: a point outside the region is drawn off-canvas rather than
+// pinned to the edge, where an escaped animal would look like it was on the
+// fence line. The region itself includes every animal (see below).
 function toPercent(coord: MapLatLng, r: Region) {
   const { west, north, east, south } = r;
   const width = east - west || 1;
@@ -85,8 +86,8 @@ function toPercent(coord: MapLatLng, r: Region) {
   const x = ((coord.longitude - west) / width) * 100;
   const y = ((north - coord.latitude) / height) * 100;
   return {
-    left: `${Math.max(0, Math.min(100, x))}%`,
-    top: `${Math.max(0, Math.min(100, y))}%`,
+    left: `${x}%`,
+    top: `${y}%`,
   };
 }
 
@@ -115,6 +116,24 @@ function toSvgPoints(coords: MapLatLng[], size: Size, r: Region) {
     .join(' ');
 }
 
+/**
+ * Point pressed, relative to the pressed element. react-native-web only fills
+ * locationX/Y on responder events; a Pressable gets the DOM event, so fall
+ * back to its client position minus the element's box. (Without this every
+ * tapped fence point was NaN.)
+ */
+function pressPoint(e: GestureResponderEvent): { x: number; y: number } | null {
+  const { locationX, locationY } = e.nativeEvent;
+  if (Number.isFinite(locationX) && Number.isFinite(locationY)) return { x: locationX, y: locationY };
+  const dom = e.nativeEvent as unknown as { clientX?: number; clientY?: number };
+  const target = e.currentTarget as unknown as {
+    getBoundingClientRect?: () => { left: number; top: number };
+  };
+  if (dom.clientX == null || dom.clientY == null || !target?.getBoundingClientRect) return null;
+  const rect = target.getBoundingClientRect();
+  return { x: dom.clientX - rect.left, y: dom.clientY - rect.top };
+}
+
 function RanchMapInner(
   {
     mapType,
@@ -127,23 +146,31 @@ function RanchMapInner(
     onDeleteVertex,
     onMarkerPress,
     onFencePress,
+    onMapPress,
   }: RanchMapProps,
   ref: React.ForwardedRef<RanchMapHandle>
 ) {
   const [size, setSize] = useState<Size>({ width: 0, height: 0 });
   const [cursor, setCursor] = useState<MapLatLng | null>(null);
-  const draggingIdx = useRef<number | null>(null);
-  const userRegionRef = useRef<Region | null>(null);
+  const [draggingIdx, setDraggingIdx] = useState<number | null>(null);
+  // Set by fitToCoordinates; until then the region follows fences + animals.
+  const [userRegion, setUserRegion] = useState<Region | null>(null);
 
-  const polygonCoords = useMemo(
-    () => polygons.flatMap((p) => p.coords),
-    [polygons]
+  // Frame fences AND animals, so an animal far outside every fence is still
+  // on screen.
+  const frameCoords = useMemo(
+    () => [
+      ...polygons.flatMap((p) => p.coords),
+      ...locations
+        .filter((l) => l.latitude != null && l.longitude != null)
+        .map((l) => ({ latitude: l.latitude as number, longitude: l.longitude as number })),
+    ],
+    [polygons, locations]
   );
 
   const region: Region = useMemo(() => {
-    if (userRegionRef.current) return userRegionRef.current;
-    const coords = polygonCoords.length > 0 ? polygonCoords : [];
-    const b = computeBounds(coords);
+    if (userRegion) return userRegion;
+    const b = computeBounds(frameCoords);
     if (b) return computeRegion(b);
     const { latitude, longitude, latitudeDelta, longitudeDelta } = RANCH_REGION;
     return {
@@ -152,18 +179,13 @@ function RanchMapInner(
       south: latitude - latitudeDelta / 2,
       north: latitude + latitudeDelta / 2,
     };
-  }, [polygonCoords]);
+  }, [frameCoords, userRegion]);
 
   const fitToCoordinates = useCallback<NonNullable<RanchMapHandle['fitToCoordinates']>>(
     (coords, opts) => {
       const b = computeBounds(coords);
       if (!b) return;
-      const padding = opts?.edgePadding;
-      const padRatio = padding
-        ? 0.5
-        : 0.3;
-      userRegionRef.current = computeRegion(b, padRatio);
-      setSize((s) => ({ ...s, width: s.width + 0.0001 }));
+      setUserRegion(computeRegion(b, opts?.edgePadding ? 0.5 : 0.3));
     },
     []
   );
@@ -176,7 +198,20 @@ function RanchMapInner(
     [region]
   );
 
-  useImperativeHandle(ref, () => ({ fitToCoordinates, getCenter }), [fitToCoordinates, getCenter]);
+  // Zooms around the current centre: each level halves (or doubles) the span.
+  const zoomBy = useCallback(
+    (delta: number) => {
+      const factor = Math.pow(2, -delta);
+      const cLat = (region.north + region.south) / 2;
+      const cLng = (region.west + region.east) / 2;
+      const halfLat = ((region.north - region.south) / 2) * factor;
+      const halfLng = ((region.east - region.west) / 2) * factor;
+      setUserRegion({ west: cLng - halfLng, east: cLng + halfLng, south: cLat - halfLat, north: cLat + halfLat });
+    },
+    [region]
+  );
+
+  useImperativeHandle(ref, () => ({ fitToCoordinates, getCenter, zoomBy }), [fitToCoordinates, getCenter, zoomBy]);
 
   const onLayout = useCallback((e: LayoutChangeEvent) => {
     const { width, height } = e.nativeEvent.layout;
@@ -214,8 +249,8 @@ function RanchMapInner(
             (locationY / size.height) * 100,
             region
           );
-          if (draggingIdx.current != null && onDragVertex) {
-            onDragVertex(draggingIdx.current, coord);
+          if (draggingIdx != null && onDragVertex) {
+            onDragVertex(draggingIdx, coord);
           } else {
             setCursor(coord);
           }
@@ -228,14 +263,14 @@ function RanchMapInner(
             (locationY / size.height) * 100,
             region
           );
-          if (draggingIdx.current != null) {
-            if (onDragVertex) onDragVertex(draggingIdx.current, coord);
-            draggingIdx.current = null;
+          if (draggingIdx != null) {
+            if (onDragVertex) onDragVertex(draggingIdx, coord);
+            setDraggingIdx(null);
           }
           setCursor(null);
         },
       }),
-    [drawing, size.width, size.height, onDragVertex, region]
+    [drawing, size.width, size.height, onDragVertex, region, draggingIdx]
   );
 
   return (
@@ -258,24 +293,23 @@ function RanchMapInner(
         <Pressable
           style={StyleSheet.absoluteFill}
           onPress={(e) => {
+            onMapPress?.();
             if (!drawing || !size.width || !size.height) return;
-            const { locationX, locationY } = e.nativeEvent;
-            onPressCoordinate(
-              fromPercent((locationX / size.width) * 100, (locationY / size.height) * 100, region)
-            );
+            const pt = pressPoint(e);
+            if (!pt) return;
+            onPressCoordinate(fromPercent((pt.x / size.width) * 100, (pt.y / size.height) * 100, region));
           }}
           onLongPress={(e) => {
             if (!drawing || !size.width || !size.height) return;
-            const { locationX, locationY } = e.nativeEvent;
-            onPressCoordinate(
-              fromPercent((locationX / size.width) * 100, (locationY / size.height) * 100, region)
-            );
+            const pt = pressPoint(e);
+            if (!pt) return;
+            onPressCoordinate(fromPercent((pt.x / size.width) * 100, (pt.y / size.height) * 100, region));
           }}>
           {size.width > 0 ? (
             <Svg width={size.width} height={size.height} style={StyleSheet.absoluteFill}>
               {polygons.map((p) => {
                 const coords = cleanPolygonCoords(p.coords);
-                if (coords.length < 3) return null;
+                if (coords.length < 3 || p.isActive === false) return null;
                 const pts = toSvgPoints(coords, size, region);
                 if (!pts) return null;
                 return (
@@ -291,7 +325,7 @@ function RanchMapInner(
 
               {polygons.map((p) => {
                 const coords = cleanPolygonCoords(p.coords);
-                if (coords.length < 3) return null;
+                if (coords.length < 3 || p.isActive === false) return null;
                 const closed = [...coords, coords[0]];
                 const pts = toSvgPoints(closed, size, region);
                 if (!pts) return null;
@@ -328,13 +362,15 @@ function RanchMapInner(
                 if (coords.length < 3) return null;
                 const pts = toSvgPoints(coords, size, region);
                 if (!pts) return null;
+                const active = p.isActive !== false;
                 return (
                   <SvgPolygon
                     key={`fill-${p.id}`}
                     points={pts}
-                    fill={drawing ? 'rgba(46,125,50,0.08)' : FENCE_FILL}
-                    stroke={FENCE_STROKE}
-                    strokeWidth={FENCE_STROKE_WIDTH}
+                    fill={drawing ? MapPalette.fenceFillDrawing : active ? FENCE_FILL : MapPalette.inactiveFill}
+                    stroke={active ? FENCE_STROKE : MapPalette.inactiveStroke}
+                    strokeWidth={active ? FENCE_STROKE_WIDTH : 3}
+                    strokeDasharray={active ? undefined : '6 5'}
                     onPress={drawing ? undefined : () => onFencePress(p.id, p.name)}
                   />
                 );
@@ -391,10 +427,11 @@ function RanchMapInner(
               onPress={drawing ? undefined : () => onFencePress(p.id, p.name)}
               style={[
                 styles.fenceLabel,
+                p.isActive === false && styles.fenceLabelOff,
                 { left: pos.left as DimensionValue, top: pos.top as DimensionValue },
               ]}>
-              <Text style={styles.fenceLabelText} numberOfLines={1}>
-                {p.name}
+              <Text style={[styles.fenceLabelText, p.isActive === false && styles.fenceLabelTextOff]} numberOfLines={1}>
+                {p.isActive === false ? `${p.name} · off` : p.name}
               </Text>
             </Pressable>
           );
@@ -423,12 +460,8 @@ function RanchMapInner(
                     if (draftPoints.length <= 3) return;
                     onDeleteVertex?.(index);
                   }}
-                  onPressIn={() => {
-                    draggingIdx.current = index;
-                  }}
-                  onPressOut={() => {
-                    draggingIdx.current = null;
-                  }}
+                  onPressIn={() => setDraggingIdx(index)}
+                  onPressOut={() => setDraggingIdx(null)}
                   style={[
                     styles.vertex,
                     { left: pos.left as DimensionValue, top: pos.top as DimensionValue },
@@ -442,30 +475,39 @@ function RanchMapInner(
         {locations.map((item) => {
           if (item.latitude == null || item.longitude == null) return null;
           const pos = toPercent({ latitude: item.latitude, longitude: item.longitude }, region);
-          const color = statusMarkerColor(item.animal_status);
+          const meta = StatusMeta[statusKey(item.animal_status, item.stale)];
+          const urgent = !item.stale && (item.animal_status === 'breach' || item.animal_status === 'near_boundary');
           return (
             <Pressable
               key={item.livestock_id}
               onPress={() => !drawing && onMarkerPress(item.livestock_id)}
+              accessibilityRole="button"
+              accessibilityLabel={`${item.name}, tag ${item.tag_id}, ${meta.label}`}
               style={[
                 styles.marker,
                 { left: pos.left as DimensionValue, top: pos.top as DimensionValue },
-                { backgroundColor: color, shadowColor: color },
                 drawing && styles.markerDisabled,
               ]}>
-              <Text style={styles.markerLabel}>{item.tag_id}</Text>
+              <View
+                style={[
+                  styles.tag,
+                  { borderColor: meta.color },
+                  item.stale && styles.tagStale,
+                  urgent && { backgroundColor: meta.soft },
+                ]}>
+                <View style={[styles.tagDot, { backgroundColor: item.stale ? Colors.surface : meta.color, borderColor: meta.color }]} />
+                <Text style={[styles.tagText, { color: meta.ink }]} numberOfLines={1}>
+                  {item.stale
+                    ? `${item.tag_id} · no fix`
+                    : item.animal_status === 'breach'
+                      ? `${item.tag_id} · outside`
+                      : item.tag_id}
+                </Text>
+              </View>
             </Pressable>
           );
         })}
-
-        <View style={styles.webBadge} pointerEvents="none">
-          <Text style={styles.webBadgeText}>
-            Web preview map · Use iOS/Android for full satellite GIS
-          </Text>
-        </View>
       </View>
-
-      <MapLegend />
     </View>
   );
 }
@@ -482,32 +524,42 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   satellite: {
-    backgroundColor: '#3d4a2e',
+    backgroundColor: MapPalette.webSatellite,
   },
   standard: {
-    backgroundColor: '#dce8d4',
+    backgroundColor: MapPalette.webPasture,
   },
   marker: {
     position: 'absolute',
-    width: 22,
-    height: 22,
-    marginLeft: -11,
-    marginTop: -11,
-    borderRadius: 11,
-    borderWidth: 3,
-    borderColor: '#fff',
-    alignItems: 'center',
+    // Anchored on the tag's left dot, which sits on the animal's position.
+    marginLeft: -12,
+    marginTop: -14,
+    minHeight: 28,
     justifyContent: 'center',
     zIndex: 2,
-    ...Shadows.soft,
   },
   markerDisabled: {
     opacity: 0.6,
   },
-  markerLabel: {
-    fontSize: 7,
-    fontWeight: '800',
-    color: '#fff',
+  tag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    maxWidth: 140,
+    paddingLeft: 6,
+    paddingRight: 9,
+    paddingVertical: 3,
+    borderRadius: Radius.pill,
+    borderWidth: 2,
+    backgroundColor: Colors.surface,
+    ...Shadows.raised,
+  },
+  tagStale: { borderStyle: 'dashed' },
+  tagDot: { width: 10, height: 10, borderRadius: 5, borderWidth: 2 },
+  tagText: {
+    fontFamily: FontFamily.semibold,
+    fontSize: 12,
+    lineHeight: 16,
   },
   vertex: {
     position: 'absolute',
@@ -524,10 +576,10 @@ const styles = StyleSheet.create({
     width: 24,
     height: 24,
     borderRadius: 12,
-    backgroundColor: '#fff',
+    backgroundColor: Colors.surface,
     borderWidth: 3,
     borderColor: DRAFT_STROKE,
-    ...Shadows.soft,
+    ...Shadows.raised,
   },
   ghostVertex: {
     position: 'absolute',
@@ -538,43 +590,29 @@ const styles = StyleSheet.create({
     borderRadius: 7,
     borderWidth: 2,
     borderColor: GHOST_STROKE,
-    backgroundColor: 'rgba(255,255,255,0.6)',
+    backgroundColor: MapPalette.attributionBg,
     zIndex: 3,
   },
   fenceLabel: {
     position: 'absolute',
-    marginLeft: -55,
-    marginTop: -12,
-    backgroundColor: '#FFFFFF',
+    marginLeft: -65,
+    marginTop: -13,
+    backgroundColor: Colors.surface,
     paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 14,
+    paddingVertical: 4,
+    borderRadius: Radius.pill,
     borderWidth: 2,
     borderColor: FENCE_STROKE,
-    width: 110,
+    width: 130,
     alignItems: 'center',
     zIndex: 3,
-    ...Shadows.card,
   },
+  fenceLabelOff: { borderColor: MapPalette.inactiveStroke, borderStyle: 'dashed' },
   fenceLabelText: {
+    fontFamily: FontFamily.semibold,
     fontSize: 12,
-    fontWeight: '900',
-    color: FENCE_STROKE,
-    letterSpacing: 0.3,
+    lineHeight: 16,
+    color: Colors.primaryDark,
   },
-  webBadge: {
-    position: 'absolute',
-    left: 12,
-    bottom: 12,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    zIndex: 3,
-  },
-  webBadgeText: {
-    color: '#fff',
-    fontSize: 11,
-    fontWeight: '600',
-  },
+  fenceLabelTextOff: { color: Colors.offlineInk },
 });

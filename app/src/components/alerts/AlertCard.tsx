@@ -1,11 +1,14 @@
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { memo, useEffect, useState } from 'react';
+import { Pressable, StyleSheet, View } from 'react-native';
 
 import { Badge } from '@/components/ui/Badge';
-import { Colors, Radius, Shadows, Spacing } from '@/constants/theme';
-import type { Alert, AlertType } from '@/types/database';
+import { Button } from '@/components/ui/Button';
+import { Text } from '@/components/ui/Text';
+import { IconName, Tone, ToneColors } from '@/components/ui/tones';
+import { Colors, Radius, Spacing } from '@/constants/theme';
 import { timeAgo } from '@/lib/utils';
+import type { Alert, AlertType } from '@/types/database';
 
 function durationLabel(ms: number): string {
   const mins = Math.floor(ms / 60_000);
@@ -14,56 +17,49 @@ function durationLabel(ms: number): string {
   return `${mins}m ${secs}s`;
 }
 
-export function alertMeta(type: AlertType) {
+type AlertMeta = {
+  tone: Tone;
+  color: string;
+  ink: string;
+  soft: string;
+  icon: IconName;
+  section: 'critical' | 'warning' | 'info';
+};
+
+function meta(tone: Tone, icon: IconName, section: AlertMeta['section']): AlertMeta {
+  const c = ToneColors[tone];
+  return { tone, color: c.color, ink: c.ink, soft: c.soft, icon, section };
+}
+
+/** Colour, icon and list section for each alert type. Shared by the Alerts list and the live banner. */
+export function alertMeta(type: AlertType): AlertMeta {
   switch (type) {
     case 'boundary_breach':
-      return {
-        color: Colors.critical,
-        soft: Colors.criticalSoft,
-        icon: 'alert' as const,
-        section: 'critical' as const,
-      };
+      return meta('critical', 'alert-octagon-outline', 'critical');
     case 'low_battery':
-      return {
-        color: Colors.warning,
-        soft: Colors.warningSoft,
-        icon: 'battery-alert' as const,
-        section: 'warning' as const,
-      };
+      return meta('warning', 'battery-alert-variant-outline', 'warning');
     case 'approach_warning':
-      return {
-        color: Colors.caution,
-        soft: Colors.warningSoft,
-        icon: 'alert-outline' as const,
-        section: 'warning' as const,
-      };
+      return meta('warning', 'alert-outline', 'warning');
     case 'stationary':
-      return {
-        color: Colors.warning,
-        soft: Colors.warningSoft,
-        icon: 'map-marker' as const,
-        section: 'warning' as const,
-      };
+      return meta('warning', 'map-marker-alert-outline', 'warning');
     default:
-      return {
-        color: Colors.info,
-        soft: Colors.infoSoft,
-        icon: 'information' as const,
-        section: 'info' as const,
-      };
+      return meta('info', 'information-outline', 'info');
   }
 }
 
-export function AlertCard({
-  alert,
-  onPress,
-}: {
+type Props = {
   alert: Alert;
+  /** Opens the related animal. Never resolves the alert. */
   onPress?: () => void;
-}) {
-  const meta = alertMeta(alert.alert_type);
+  /** Shown as an explicit Resolve button on unresolved alerts. */
+  onResolve?: () => void;
+};
+
+export const AlertCard = memo(function AlertCard({ alert, onPress, onResolve }: Props) {
+  const m = alertMeta(alert.alert_type);
   const isActiveBreach = alert.alert_type === 'boundary_breach' && alert.status === 'unresolved';
   const isResolvedBreach = alert.alert_type === 'boundary_breach' && alert.status === 'resolved';
+  const resolved = alert.status === 'resolved';
 
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -78,107 +74,86 @@ export function AlertCard({
       ? durationLabel(new Date(alert.resolved_at).getTime() - new Date(alert.created_at).getTime())
       : null;
 
+  // The tappable area (opens the animal) and Resolve are siblings, so screen
+  // readers can reach both; a button nested in a pressable is not focusable.
   return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.card,
-        isActiveBreach && styles.cardActiveBreach,
-        { opacity: pressed ? 0.94 : 1 },
-      ]}>
-      <View style={[styles.accent, { backgroundColor: meta.color }]} />
-      <View style={[styles.iconWrap, { backgroundColor: meta.color }]}>
-        <MaterialCommunityIcons name={meta.icon} size={18} color="#fff" />
-      </View>
-      <View style={styles.body}>
-        <View style={styles.titleRow}>
-          <Text style={styles.title} numberOfLines={1}>
+    <View style={[styles.card, isActiveBreach && styles.activeBreach]}>
+      <Pressable
+        onPress={onPress}
+        disabled={!onPress}
+        accessibilityRole={onPress ? 'button' : undefined}
+        accessibilityHint={onPress ? 'Opens the animal' : undefined}
+        style={({ pressed }) => [styles.main, pressed && styles.pressed]}>
+        <View style={[styles.iconBox, { backgroundColor: resolved ? Colors.surfaceSunken : m.soft }]}>
+          <MaterialCommunityIcons name={m.icon} size={22} color={resolved ? Colors.textSecondary : m.color} />
+        </View>
+        <View style={styles.body}>
+          <Text variant="heading" numberOfLines={2}>
             {alert.title}
           </Text>
-          {isActiveBreach ? <Badge label="ACTIVE" tone="critical" /> : null}
-        </View>
-        {alert.description ? (
-          <Text style={styles.desc} numberOfLines={2}>
-            {alert.description}
-          </Text>
-        ) : null}
-        <View style={styles.metaRow}>
-          <Text style={styles.time}>{timeAgo(alert.created_at)}</Text>
-          {breachDurationLabel ? (
-            <Text style={[styles.time, isActiveBreach && styles.durationActive]}>
-              {' '}
-              · {isActiveBreach ? 'outside' : 'was outside'} {breachDurationLabel}
+          {alert.description ? (
+            <Text variant="caption" color="secondary" numberOfLines={2}>
+              {alert.description}
             </Text>
           ) : null}
+          <View style={styles.metaRow}>
+            {isActiveBreach ? <Badge label="Active" tone="critical" dot /> : null}
+            <Text variant="caption" color="secondary" style={styles.metaText}>
+              {timeAgo(alert.created_at)}
+              {breachDurationLabel ? (
+                <Text
+                  variant={isActiveBreach ? 'captionStrong' : 'caption'}
+                  color={isActiveBreach ? Colors.criticalInk : 'secondary'}>
+                  {' · '}
+                  {isActiveBreach ? 'outside' : 'was outside'} {breachDurationLabel}
+                </Text>
+              ) : null}
+            </Text>
+          </View>
         </View>
-      </View>
-      <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
-    </Pressable>
+        {onPress ? <MaterialCommunityIcons name="chevron-right" size={22} color={Colors.textMuted} /> : null}
+      </Pressable>
+      {onResolve && alert.status === 'unresolved' ? (
+        <Button
+          label="Resolve"
+          icon="check-all"
+          variant="secondary"
+          size="sm"
+          onPress={onResolve}
+          accessibilityLabel={`Resolve ${alert.title}`}
+          style={styles.resolve}
+        />
+      ) : null}
+    </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   card: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    gap: Spacing.sm,
+    padding: Spacing.lg,
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
-    paddingVertical: Spacing.md,
-    paddingRight: Spacing.md,
-    marginBottom: Spacing.md,
-    overflow: 'hidden',
-    ...Shadows.card,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.border,
   },
-  cardActiveBreach: {
+  activeBreach: {
     backgroundColor: Colors.criticalSoft,
     borderWidth: 1.5,
     borderColor: Colors.critical,
   },
-  titleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  metaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-  },
-  durationActive: {
-    color: Colors.critical,
-    fontWeight: '800',
-  },
-  accent: {
-    width: 4,
-    alignSelf: 'stretch',
-    marginRight: Spacing.md,
-  },
-  iconWrap: {
-    width: 40,
-    height: 40,
+  main: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md },
+  pressed: { opacity: 0.9 },
+  iconBox: {
+    width: 44,
+    height: 44,
     borderRadius: Radius.sm,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: Spacing.md,
   },
-  body: {
-    flex: 1,
-    paddingRight: Spacing.sm,
-  },
-  title: {
-    flexShrink: 1,
-    fontSize: 15,
-    fontWeight: '700',
-    color: Colors.text,
-  },
-  desc: {
-    fontSize: 13,
-    color: Colors.textSecondary,
-    marginTop: 2,
-  },
-  time: {
-    fontSize: 12,
-    color: Colors.textMuted,
-    marginTop: 6,
-  },
+  body: { flex: 1, minWidth: 0, gap: 4 },
+  metaRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: Spacing.sm },
+  metaText: { flexShrink: 1 },
+  // Lines up with the text column (icon box 44 + gap 12).
+  resolve: { alignSelf: 'flex-start', marginLeft: 44 + Spacing.md },
 });

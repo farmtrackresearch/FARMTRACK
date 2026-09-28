@@ -42,7 +42,7 @@ static const uint32_t LISTEN_MS = 3000;
 
 void setup() {
   Serial.begin(115200);
-  pinMode(PIN_LED, OUTPUT);
+  pinMode(PIN_LED, INPUT);   // never an output - DIO0 may be on this pin (pins.h)
   delay(1000);
   Serial.println("\n=== FarmTrack TEST 2b - NEO-6M BAUD SCAN ===");
   Serial.printf("UART2  RX=GPIO%d  TX=GPIO%d   listening %lums per baud\n\n",
@@ -84,7 +84,6 @@ void loop() {
                   sampleLen ? sample : "(no printable text)");
 
     gpsUart.end();
-    digitalWrite(PIN_LED, i % 2);
     delay(200);
   }
 

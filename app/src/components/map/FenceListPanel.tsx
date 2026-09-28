@@ -1,9 +1,13 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { memo, useEffect, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
-import { Colors, Radius, Shadows, Spacing } from '@/constants/theme';
+import { MapSheet } from '@/components/map/MapSheet';
+import { CountBadge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
+import { IconButton } from '@/components/ui/IconButton';
+import { Text } from '@/components/ui/Text';
+import { A11y, Colors, MapPalette, Radius, Shadows, Spacing } from '@/constants/theme';
 
 type UndoToastProps = {
   fenceName: string;
@@ -12,13 +16,8 @@ type UndoToastProps = {
   timeoutMs?: number;
 };
 
-export function UndoFenceToast({
-  fenceName,
-  onUndo,
-  onDismiss,
-  timeoutMs = 8000,
-}: UndoToastProps) {
-  const insets = useSafeAreaInsets();
+/** "Fence saved · Undo" card. Laid out above the fence sheet, never over it. */
+export function UndoFenceToast({ fenceName, onUndo, onDismiss, timeoutMs = 8000 }: UndoToastProps) {
   const [visible, setVisible] = useState(true);
 
   useEffect(() => {
@@ -33,34 +32,30 @@ export function UndoFenceToast({
   if (!visible) return null;
 
   return (
-    <View
-      style={[
-        styles.toastWrap,
-        { bottom: insets.bottom + 16 },
-      ]}
-      pointerEvents="box-none">
-      <View style={styles.toastCard}>
-        <View style={styles.toastIcon}>
-          <MaterialCommunityIcons name="check-circle-outline" size={18} color={Colors.success} />
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.toastTitle}>Fence saved</Text>
-          <Text style={styles.toastName} numberOfLines={1}>
-            {fenceName}
-          </Text>
-        </View>
-        <Pressable
-          onPress={() => {
-            setVisible(false);
-            onDismiss?.();
-            onUndo();
-          }}
-          style={styles.toastBtn}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-          <MaterialCommunityIcons name="undo-variant" size={16} color="#fff" />
-          <Text style={styles.toastBtnText}>Undo</Text>
-        </Pressable>
+    <View style={styles.toast} accessibilityLiveRegion="polite">
+      <View style={styles.toastIcon}>
+        <MaterialCommunityIcons name="check-circle-outline" size={20} color={Colors.primary} />
       </View>
+      <View style={styles.flex}>
+        <Text variant="overline" color="secondary">
+          Fence saved
+        </Text>
+        <Text variant="bodyStrong" numberOfLines={1}>
+          {fenceName}
+        </Text>
+      </View>
+      <Button
+        label="Undo"
+        icon="undo-variant"
+        variant="destructive"
+        size="sm"
+        accessibilityLabel={`Undo: delete ${fenceName}`}
+        onPress={() => {
+          setVisible(false);
+          onDismiss?.();
+          onUndo();
+        }}
+      />
     </View>
   );
 }
@@ -70,6 +65,7 @@ type FenceListItem = {
   name: string;
   pointCount: number;
   isActive: boolean;
+  bufferMeters?: number;
   created_at?: string | null;
 };
 
@@ -79,214 +75,167 @@ type FenceListPanelProps = {
   onToggleCollapsed?: () => void;
   onFocus: (id: string) => void;
   onDelete: (id: string, name: string) => void;
+  /** Opens the create sheet (it explains read-only access to staff). */
+  onCreate: () => void;
   isAdmin: boolean;
 };
 
+/** Fence list as the map's bottom sheet, with the "New fence" action. */
 export function FenceListPanel({
   items,
   collapsed = false,
   onToggleCollapsed,
   onFocus,
   onDelete,
+  onCreate,
   isAdmin,
 }: FenceListPanelProps) {
-  if (items.length === 0) return null;
+  const empty = items.length === 0;
+  const activeCount = items.filter((i) => i.isActive).length;
 
   return (
-    <View style={styles.root}>
-      <Pressable
-        onPress={onToggleCollapsed}
-        style={styles.header}
-        hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}>
-        <View style={styles.headerLeft}>
-          <MaterialCommunityIcons name="vector-polygon" size={16} color={Colors.primaryDark} />
-          <Text style={styles.headerTitle}>
-            Fences ({items.length})
-          </Text>
-        </View>
-        <MaterialCommunityIcons
-          name={collapsed ? 'chevron-down' : 'chevron-up'}
-          size={18}
-          color={Colors.textSecondary}
-        />
-      </Pressable>
-      {collapsed ? null : (
-        <View style={styles.list}>
-          {items.map((it) => (
-            <View key={it.id} style={styles.row}>
-              <Pressable
-                onPress={() => onFocus(it.id)}
-                style={styles.rowMain}
-                hitSlop={{ top: 6, bottom: 6 }}>
-                <View style={styles.rowDot} />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.rowName} numberOfLines={1}>
-                    {it.name}
-                  </Text>
-                  <Text style={styles.rowMeta}>
-                    {it.pointCount} vertices · {it.isActive ? 'Active' : 'Inactive'}
-                  </Text>
-                </View>
-                <MaterialCommunityIcons
-                  name="crosshairs-gps"
-                  size={16}
-                  color={Colors.textSecondary}
-                />
-              </Pressable>
-              {isAdmin ? (
-                <Pressable
-                  onPress={() => onDelete(it.id, it.name)}
-                  style={styles.deleteBtn}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 4 }}>
-                  <MaterialCommunityIcons
-                    name="trash-can-outline"
-                    size={16}
-                    color={Colors.critical}
-                  />
-                </Pressable>
-              ) : null}
+    <MapSheet>
+      <View style={styles.header}>
+        <Pressable
+          onPress={empty ? undefined : onToggleCollapsed}
+          disabled={empty}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: !collapsed, disabled: empty }}
+          accessibilityLabel={empty ? 'No fences yet' : `Fences, ${items.length}. ${collapsed ? 'Show list' : 'Hide list'}`}
+          style={styles.headerMain}>
+          <MaterialCommunityIcons name="fence" size={22} color={Colors.primary} />
+          <View style={styles.flex}>
+            <View style={styles.titleRow}>
+              <Text variant="heading" numberOfLines={1}>
+                {empty ? 'No fences yet' : 'Fences'}
+              </Text>
+              {empty ? null : <CountBadge count={items.length} tone="success" />}
             </View>
+            <Text variant="caption" color="secondary" numberOfLines={2}>
+              {empty ? 'Draw a boundary to start monitoring' : `${activeCount} active`}
+            </Text>
+          </View>
+          {empty ? null : (
+            <MaterialCommunityIcons
+              name={collapsed ? 'chevron-up' : 'chevron-down'}
+              size={22}
+              color={Colors.textSecondary}
+            />
+          )}
+        </Pressable>
+        <Button
+          label="New fence"
+          icon={isAdmin ? 'plus' : 'lock-outline'}
+          size="sm"
+          onPress={onCreate}
+          accessibilityHint={isAdmin ? 'Opens fence drawing' : 'Only admins can draw fences'}
+        />
+      </View>
+      {collapsed || empty ? null : (
+        <ScrollView style={styles.list} contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
+          {items.map((it) => (
+            <FenceRow key={it.id} item={it} onFocus={onFocus} onDelete={onDelete} isAdmin={isAdmin} />
           ))}
-        </View>
+        </ScrollView>
       )}
-    </View>
+    </MapSheet>
   );
 }
 
+const FenceRow = memo(function FenceRow({
+  item,
+  onFocus,
+  onDelete,
+  isAdmin,
+}: {
+  item: FenceListItem;
+  onFocus: (id: string) => void;
+  onDelete: (id: string, name: string) => void;
+  isAdmin: boolean;
+}) {
+  return (
+    <View style={styles.row}>
+      <Pressable
+        onPress={() => onFocus(item.id)}
+        accessibilityRole="button"
+        accessibilityLabel={`Show ${item.name} on the map`}
+        style={({ pressed }) => [styles.rowMain, pressed && styles.rowPressed]}>
+        <View style={[styles.swatch, !item.isActive && styles.swatchOff]} />
+        <View style={styles.flex}>
+          <Text variant="bodyStrong" numberOfLines={1}>
+            {item.name}
+          </Text>
+          <Text variant="caption" color="secondary" numberOfLines={1} maxFontSizeMultiplier={A11y.controlFontScale}>
+            {item.pointCount} points · {item.isActive ? 'Active' : 'Off'}
+            {item.bufferMeters != null ? ` · warn ${Math.round(item.bufferMeters)} m` : ''}
+          </Text>
+        </View>
+        <MaterialCommunityIcons name="crosshairs-gps" size={20} color={Colors.textSecondary} />
+      </Pressable>
+      {isAdmin ? (
+        <IconButton
+          icon="trash-can-outline"
+          variant="danger"
+          size={40}
+          iconSize={20}
+          onPress={() => onDelete(item.id, item.name)}
+          accessibilityLabel={`Delete ${item.name}`}
+        />
+      ) : null}
+    </View>
+  );
+});
+
 const styles = StyleSheet.create({
-  toastWrap: {
-    position: 'absolute',
-    left: Spacing.md,
-    right: Spacing.md,
-    alignItems: 'center',
-    zIndex: 50,
-  },
-  toastCard: {
+  flex: { flex: 1, minWidth: 0 },
+  toast: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.sm,
+    gap: Spacing.md,
+    marginHorizontal: Spacing.md,
+    padding: Spacing.md,
     backgroundColor: Colors.surface,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: Radius.lg,
-    width: '100%',
-    maxWidth: 420,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(27,48,34,0.08)',
-    ...Shadows.card,
+    borderRadius: Radius.md,
+    ...Shadows.raised,
   },
   toastIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(41,128,60,0.12)',
-  },
-  toastTitle: {
-    fontSize: 11,
-    color: Colors.textSecondary,
-    fontWeight: '700',
-    letterSpacing: 0.3,
-    textTransform: 'uppercase',
-  },
-  toastName: {
-    fontSize: 14,
-    color: Colors.primaryDark,
-    fontWeight: '800',
-    marginTop: 1,
-  },
-  toastBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: Colors.critical,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: Radius.md,
-  },
-  toastBtnText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  root: {
-    position: 'absolute',
-    top: Spacing.sm,
-    right: Spacing.md,
-    width: 240,
-    maxHeight: 300,
-    backgroundColor: Colors.surface,
-    borderRadius: Radius.lg,
-    ...Shadows.card,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(27,48,34,0.08)',
-    overflow: 'hidden',
-    zIndex: 10,
+    backgroundColor: Colors.primarySoft,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    backgroundColor: Colors.surfaceMuted,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(27,48,34,0.06)',
+    gap: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.xs,
   },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  headerTitle: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: Colors.primaryDark,
-    letterSpacing: 0.2,
-  },
-  list: {
-    paddingTop: 4,
-    paddingBottom: 6,
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    gap: 8,
-  },
+  headerMain: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: Spacing.md, minHeight: 48 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  list: { flexShrink: 1, maxHeight: 260 },
+  listContent: { paddingHorizontal: Spacing.sm, paddingTop: Spacing.xs },
+  row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, paddingRight: Spacing.sm },
   rowMain: {
     flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: Spacing.md,
+    minHeight: 52,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: Radius.sm,
   },
-  rowDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#2D5A27',
+  rowPressed: { backgroundColor: Colors.surfaceSunken },
+  swatch: {
+    width: 16,
+    height: 16,
+    borderRadius: 4,
     borderWidth: 2,
-    borderColor: '#fff',
+    borderColor: MapPalette.fenceStroke,
+    backgroundColor: MapPalette.fenceFill,
   },
-  rowName: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: Colors.primaryDark,
-  },
-  rowMeta: {
-    fontSize: 10,
-    color: Colors.textSecondary,
-    marginTop: 1,
-    fontWeight: '600',
-  },
-  deleteBtn: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(198,40,40,0.08)',
-  },
+  swatchOff: { borderColor: MapPalette.inactiveStroke, borderStyle: 'dashed', backgroundColor: MapPalette.inactiveFill },
 });

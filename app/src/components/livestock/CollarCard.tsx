@@ -1,10 +1,14 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { memo } from 'react';
+import { Pressable, StyleSheet, View } from 'react-native';
 
-import { AlertBanner } from '@/components/ui/AlertBanner';
+import { Badge } from '@/components/ui/Badge';
+import { Banner } from '@/components/ui/Banner';
 import { ProgressBar } from '@/components/ui/ProgressBar';
-import { Colors, Radius, Shadows, Spacing } from '@/constants/theme';
-import { batteryColor, batteryTone, timeAgo } from '@/lib/utils';
+import { Text } from '@/components/ui/Text';
+import { batteryVisual, ToneColors } from '@/components/ui/tones';
+import { A11y, Colors, Radius, Spacing } from '@/constants/theme';
+import { batteryLabel, isStale, timeAgo } from '@/lib/utils';
 import type { Collar, Livestock } from '@/types/database';
 
 type Props = {
@@ -12,158 +16,134 @@ type Props = {
   collar?: Collar | null;
   onPress?: () => void;
   compact?: boolean;
+  /** Current time from useFarm(), so "offline" updates on the 30 s tick. */
+  now: number;
 };
 
-export function CollarCard({ animal, collar, onPress, compact }: Props) {
-  const battery = collar?.battery_level ?? 0;
-  const tone = batteryTone(battery);
-  const color = batteryColor(battery);
-  const isCritical = tone === 'critical';
-
-  const iconBg =
-    tone === 'critical'
-      ? Colors.criticalSoft
-      : tone === 'warning'
-        ? Colors.warningSoft
-        : Colors.successSoft;
+export const CollarCard = memo(function CollarCard({ animal, collar, onPress, compact, now }: Props) {
+  const battery = collar?.battery_level ?? null;
+  const visual = batteryVisual(battery);
+  const tone = ToneColors[visual.tone];
+  const isCritical = visual.tone === 'critical';
+  const offline = collar ? isStale(collar.last_ping_at, now) : false;
+  const heard = timeAgo(collar?.last_ping_at, now);
 
   return (
     <Pressable
       onPress={onPress}
-      style={({ pressed }) => [
-        styles.card,
-        isCritical && styles.criticalBorder,
-        pressed && { opacity: 0.94 },
-      ]}>
+      disabled={!onPress}
+      accessibilityRole={onPress ? 'button' : undefined}
+      accessibilityLabel={`${animal.name}, battery ${batteryLabel(battery)}${offline ? ', offline' : ''}`}
+      style={({ pressed }) => [styles.card, isCritical && styles.critical, pressed && styles.pressed]}>
       <View style={styles.header}>
-        <View style={[styles.iconBox, { backgroundColor: iconBg }]}>
-          <MaterialCommunityIcons name="cow" size={22} color={color} />
+        <View style={[styles.iconBox, { backgroundColor: tone.soft }]}>
+          <MaterialCommunityIcons name="cow" size={24} color={tone.color} />
         </View>
         <View style={styles.meta}>
-          <Text style={styles.name}>{animal.name}</Text>
-          <Text style={styles.sub}>
-            {collar?.connection_type ?? 'Unpaired'}
-            {collar ? `  ·  ID: ${collar.device_hardware_id}` : ''}
+          <View style={styles.nameRow}>
+            <Text variant="heading" numberOfLines={1} style={styles.name}>
+              {animal.name}
+            </Text>
+            {offline ? <Badge label="Offline" tone="offline" dot /> : null}
+          </View>
+          <Text variant="caption" color="secondary" numberOfLines={1}>
+            {collar ? `${collar.connection_type} · ${collar.device_hardware_id}` : 'No collar paired'}
           </Text>
         </View>
         <View style={styles.right}>
-          <Text style={[styles.battery, { color }]}>{battery}%</Text>
-          {!compact ? (
+          <View style={styles.batteryRow}>
             <MaterialCommunityIcons
-              name="signal-cellular-3"
+              name={battery == null ? 'battery-unknown' : isCritical ? 'battery-alert-variant-outline' : 'battery-medium'}
               size={16}
-              color={color}
-              style={{ marginTop: 2 }}
+              color={visual.bar}
             />
-          ) : (
-            <Text style={[styles.ago, { color }]}>{timeAgo(collar?.last_ping_at)}</Text>
-          )}
+            <Text variant="heading" color={visual.ink} maxFontSizeMultiplier={A11y.controlFontScale}>
+              {batteryLabel(battery)}
+            </Text>
+          </View>
+          {compact ? (
+            <Text variant="caption" color="secondary" numberOfLines={1} maxFontSizeMultiplier={A11y.controlFontScale}>
+              {heard}
+            </Text>
+          ) : null}
         </View>
       </View>
 
-      <ProgressBar progress={battery} color={color} style={{ marginTop: 12 }} height={6} />
+      <ProgressBar
+        progress={battery ?? 0}
+        color={visual.bar}
+        height={6}
+        style={styles.bar}
+        accessibilityLabel={`Battery ${batteryLabel(battery)}`}
+      />
 
       {!compact && collar ? (
         <>
           <View style={styles.grid}>
-            <View style={styles.gridItem}>
-              <Text style={styles.gridLabel}>Signal</Text>
-              <Text style={styles.gridValue}>{collar.signal_strength}</Text>
-            </View>
+            <GridItem label="Signal" value={collar.signal_strength} />
             <View style={styles.divider} />
-            <View style={styles.gridItem}>
-              <Text style={styles.gridLabel}>Firmware</Text>
-              <Text style={styles.gridValue}>{collar.firmware_version}</Text>
-            </View>
+            <GridItem label="Firmware" value={collar.firmware_version} />
             <View style={styles.divider} />
-            <View style={styles.gridItem}>
-              <Text style={styles.gridLabel}>Last Sync</Text>
-              <Text style={styles.gridValue}>{timeAgo(collar.last_ping_at)}</Text>
-            </View>
+            <GridItem label="Last heard" value={heard} />
           </View>
           {isCritical ? (
-            <View style={{ marginTop: Spacing.md }}>
-              <AlertBanner tone="critical" title="Critical: Charge collar immediately" />
-            </View>
+            <Banner tone="critical" icon="battery-alert-variant-outline" title="Charge this collar now" compact />
+          ) : null}
+          {visual.tone === 'offline' ? (
+            <Text variant="caption" color="secondary">
+              Battery level unknown: this collar has no battery sensor fitted.
+            </Text>
           ) : null}
         </>
       ) : null}
     </Pressable>
   );
+});
+
+function GridItem({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.gridItem}>
+      <Text variant="caption" color="secondary" numberOfLines={1} maxFontSizeMultiplier={A11y.controlFontScale}>
+        {label}
+      </Text>
+      <Text variant="captionStrong" numberOfLines={1} maxFontSizeMultiplier={A11y.controlFontScale}>
+        {value}
+      </Text>
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
   card: {
+    padding: Spacing.lg,
+    gap: Spacing.md,
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
-    padding: Spacing.lg,
-    marginBottom: Spacing.md,
-    ...Shadows.card,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.border,
   },
-  criticalBorder: {
-    borderLeftWidth: 4,
-    borderLeftColor: Colors.critical,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
+  critical: { borderLeftWidth: 4, borderLeftColor: Colors.critical },
+  pressed: { backgroundColor: Colors.surfaceAlt },
+  header: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
   iconBox: {
     width: 44,
     height: 44,
     borderRadius: Radius.sm,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: Spacing.md,
   },
-  meta: {
-    flex: 1,
-  },
-  name: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: Colors.text,
-  },
-  sub: {
-    fontSize: 12,
-    color: Colors.textMuted,
-    marginTop: 2,
-  },
-  right: {
-    alignItems: 'flex-end',
-  },
-  battery: {
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  ago: {
-    fontSize: 11,
-    marginTop: 2,
-    fontWeight: '500',
-  },
+  meta: { flex: 1, minWidth: 0 },
+  nameRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  name: { flexShrink: 1 },
+  right: { alignItems: 'flex-end', maxWidth: '38%' },
+  batteryRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  bar: { marginTop: -Spacing.xs },
   grid: {
     flexDirection: 'row',
-    backgroundColor: Colors.surfaceMuted,
+    backgroundColor: Colors.surfaceAlt,
     borderRadius: Radius.md,
-    marginTop: Spacing.md,
     paddingVertical: Spacing.md,
   },
-  gridItem: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  divider: {
-    width: 1,
-    backgroundColor: Colors.border,
-  },
-  gridLabel: {
-    fontSize: 11,
-    color: Colors.textMuted,
-    marginBottom: 4,
-  },
-  gridValue: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: Colors.text,
-  },
+  gridItem: { flex: 1, minWidth: 0, alignItems: 'center', paddingHorizontal: Spacing.xs, gap: 2 },
+  divider: { width: StyleSheet.hairlineWidth, backgroundColor: Colors.border },
 });

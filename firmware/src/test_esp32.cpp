@@ -1,15 +1,18 @@
 // ===========================================================================
 //  TEST 1 - ESP32 board sanity check
 // ---------------------------------------------------------------------------
-//  No external parts needed. Verifies: USB serial, the on-board LED, and that
-//  the chip boots cleanly.
+//  No external parts needed. Verifies: USB serial and that the chip boots
+//  cleanly.
 //
 //  Build/flash:  pio run -e esp32 -t upload -t monitor
 //
-//  Expected: chip info printed once, then "tick" every second while the
-//  on-board LED blinks at 1 Hz.
+//  Expected: chip info printed once, then "tick" every second.
 //
-//  Controls:  's' or BOOT button = stop (LED off) ,  'r' or BOOT = resume
+//  The on-board LED (GPIO2) is deliberately NOT blinked: on the as-built
+//  boards the radio's DIO0 is wired to GPIO2, and driving it fights the radio
+//  and sags the 3V3 rail (see pins.h).
+//
+//  Controls:  's' or BOOT button = stop ,  'r' or BOOT = resume
 // ===========================================================================
 
 #include <Arduino.h>
@@ -19,7 +22,6 @@ static bool running = true;
 
 static void stopProgram() {
   running = false;
-  digitalWrite(PIN_LED, LOW);
   Serial.println(">> STOPPED (send 'r' or press BOOT to resume)");
 }
 
@@ -52,7 +54,7 @@ static void handleControls() {
 
 void setup() {
   Serial.begin(115200);
-  pinMode(PIN_LED, OUTPUT);
+  pinMode(PIN_LED, INPUT);   // never an output - DIO0 may be on this pin (pins.h)
   pinMode(PIN_BOOT_BTN, INPUT_PULLUP);
   delay(1000);
 
@@ -69,12 +71,8 @@ void loop() {
   if (!running) { delay(50); return; }
 
   static uint32_t last = 0;
-  static bool on = false;
-  if (millis() - last >= 500) {
+  if (millis() - last >= 1000) {
     last = millis();
-    on = !on;
-    digitalWrite(PIN_LED, on);
-    if (on) Serial.printf("tick  uptime=%lus  heap=%u\n",
-                          millis() / 1000, ESP.getFreeHeap());
+    Serial.printf("tick  uptime=%lus  heap=%u\n", millis() / 1000, ESP.getFreeHeap());
   }
 }

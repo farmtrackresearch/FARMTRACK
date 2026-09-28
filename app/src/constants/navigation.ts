@@ -1,13 +1,15 @@
-/**
- * Centralized emoji-per-section scheme — used in both the tab bar and each
- * screen's header, so adding a new section only means adding one entry here.
- */
-export const SectionEmoji = {
-  dashboard: '🏠',
-  map: '🗺️',
-  analytics: '📈',
-  hardware: '📡',
-  alerts: '🚨',
-} as const;
+import type { IconName } from '@/components/ui/tones';
 
-export type SectionKey = keyof typeof SectionEmoji;
+/**
+ * One icon per section, used by the tab bar and each screen header, so adding
+ * a section only means adding one entry here. [inactive, active].
+ */
+export const SectionIcons = {
+  dashboard: ['home-variant-outline', 'home-variant'],
+  map: ['map-outline', 'map'],
+  analytics: ['chart-box-outline', 'chart-box'],
+  hardware: ['access-point', 'access-point'],
+  alerts: ['bell-outline', 'bell'],
+} as const satisfies Record<string, readonly [IconName, IconName]>;
+
+export type SectionKey = keyof typeof SectionIcons;

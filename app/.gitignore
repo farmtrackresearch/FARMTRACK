@@ -42,3 +42,9 @@ example
 # generated native folders
 /ios
 /android
+
+# Supabase schema export (app/supabase/export_live_schema.sql output) - stays local
+supabase/live_schema_dump.*
+
+# Firebase config for Android push - supplied locally or as an EAS file variable
+google-services.json

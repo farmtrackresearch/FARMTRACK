@@ -1,10 +1,25 @@
-import { Ionicons } from '@expo/vector-icons';
-import { Stack, useRouter } from 'expo-router';
-import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useRouter } from 'expo-router';
+import { useCallback } from 'react';
+import { Alert, FlatList, StyleSheet, View } from 'react-native';
 
-import { Button } from '@/components/ui/Card';
-import { Colors, Radius, Shadows, Spacing } from '@/constants/theme';
+import { AppHeader } from '@/components/ui/AppHeader';
+import { Badge } from '@/components/ui/Badge';
+import { Banner } from '@/components/ui/Banner';
+import { Button } from '@/components/ui/Button';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { ListRow } from '@/components/ui/ListRow';
+import { Screen, screenContent, useBottomSpace } from '@/components/ui/Screen';
+import { Text } from '@/components/ui/Text';
+import type { Tone } from '@/components/ui/tones';
+import { Layout, Spacing } from '@/constants/theme';
 import { useFarm } from '@/stores/FarmDataContext';
+import type { HealthStatus, Livestock } from '@/types/database';
+
+const HEALTH_TONE: Record<HealthStatus, Tone> = {
+  healthy: 'success',
+  monitoring: 'warning',
+  critical: 'critical',
+};
 
 /**
  * LivestockScreen — Admin CRUD for animal profiles & collar pairing.
@@ -12,116 +27,103 @@ import { useFarm } from '@/stores/FarmDataContext';
 export default function LivestockScreen() {
   const router = useRouter();
   const { livestock, deleteLivestock, isAdmin } = useFarm();
+  const bottom = useBottomSpace();
+
+  const confirmDelete = useCallback(
+    (item: Livestock) => {
+      if (!isAdmin) return;
+      Alert.alert('Delete animal?', `${item.name} will be removed. Its collar becomes unassigned.`, [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            deleteLivestock(item.id).catch((err: unknown) =>
+              Alert.alert('Could not delete', err instanceof Error ? err.message : 'Unknown error')
+            );
+          },
+        },
+      ]);
+    },
+    [deleteLivestock, isAdmin]
+  );
+
+  const header = (
+    <>
+      <AppHeader
+        variant="stack"
+        inScroll
+        onBack={() => router.back()}
+        overline="Herd"
+        title="Livestock"
+        subtitle={`${livestock.length} animal${livestock.length === 1 ? '' : 's'}`}
+      />
+      <View style={[screenContent, styles.headerContent]}>
+        {isAdmin ? (
+          <>
+            <Button label="Add animal" icon="plus" onPress={() => router.push('/livestock/create')} />
+            {livestock.length > 0 ? (
+              <Text variant="caption" color="secondary">
+                Tap an animal for details. Press and hold to delete it.
+              </Text>
+            ) : null}
+          </>
+        ) : (
+          <Banner tone="info" icon="lock-outline" title="Staff have read-only access to livestock profiles." />
+        )}
+      </View>
+    </>
+  );
 
   return (
-    <View style={styles.root}>
-      <Stack.Screen
-        options={{
-          title: 'Livestock',
-          headerRight: () =>
-            isAdmin ? (
-              <Pressable onPress={() => router.push('/livestock/create')} hitSlop={8}>
-                <Ionicons name="add" size={26} color="#fff" />
-              </Pressable>
-            ) : null,
-        }}
-      />
-
-      {!isAdmin ? (
-        <Text style={styles.readOnly}>Staff have read-only access to livestock profiles.</Text>
-      ) : null}
-
+    <Screen mode="fixed">
       <FlatList
         data={livestock}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.list}
-        ListHeaderComponent={
-          isAdmin ? (
-            <Button
-              label="Add Animal"
-              icon={<Ionicons name="add" size={18} color="#fff" />}
-              onPress={() => router.push('/livestock/create')}
-              style={{ marginBottom: Spacing.lg }}
-            />
-          ) : null
-        }
+        ListHeaderComponent={header}
+        contentContainerStyle={{ paddingBottom: bottom }}
+        showsVerticalScrollIndicator={false}
+        ItemSeparatorComponent={Separator}
         renderItem={({ item }) => (
-          <Pressable
-            style={styles.card}
-            onPress={() => router.push(`/livestock/${item.id}`)}
-            onLongPress={() => {
-              if (!isAdmin) return;
-              Alert.alert('Delete animal?', item.name, [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Delete',
-                  style: 'destructive',
-                  onPress: () => void deleteLivestock(item.id),
-                },
-              ]);
-            }}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.name}>{item.name}</Text>
-              <Text style={styles.meta}>
-                Tag {item.tag_id} · {item.breed}
-                {item.age != null ? ` · ${item.age} yrs` : ''}
-              </Text>
-              <Text style={styles.collar}>
-                {item.collar?.device_hardware_id
-                  ? `Collar ${item.collar.device_hardware_id}`
-                  : 'No collar paired'}
-              </Text>
-            </View>
-            <View style={[styles.badge, { backgroundColor: statusBg(item.health_status) }]}>
-              <Text style={[styles.badgeText, { color: statusColor(item.health_status) }]}>
-                {item.health_status}
-              </Text>
-            </View>
-          </Pressable>
+          <View style={styles.rowWrap}>
+            <ListRow
+              leadingIcon="cow"
+              leadingTone={HEALTH_TONE[item.health_status]}
+              title={item.name}
+              subtitle={`Tag ${item.tag_id} · ${item.breed}${item.age != null ? ` · ${item.age} yrs` : ''}`}
+              meta={item.collar?.device_hardware_id ? `Collar ${item.collar.device_hardware_id}` : 'No collar paired'}
+              footer={<Badge label={item.health_status} tone={HEALTH_TONE[item.health_status]} dot style={styles.badge} />}
+              chevron
+              onPress={() => router.push(`/livestock/${item.id}`)}
+              onLongPress={isAdmin ? () => confirmDelete(item) : undefined}
+              accessibilityLabel={`${item.name}, tag ${item.tag_id}, ${item.health_status}`}
+              accessibilityHint={isAdmin ? 'Press and hold to delete' : undefined}
+            />
+          </View>
         )}
+        ListEmptyComponent={
+          <View style={screenContent}>
+            <EmptyState
+              title="No animals yet"
+              message={isAdmin ? 'Add your first one, then pair a collar to start tracking.' : 'An admin can add animals.'}
+              actionLabel={isAdmin ? 'Add your first animal' : undefined}
+              actionIcon="plus"
+              onAction={isAdmin ? () => router.push('/livestock/create') : undefined}
+            />
+          </View>
+        }
       />
-    </View>
+    </Screen>
   );
 }
 
-function statusBg(s: string) {
-  if (s === 'critical') return Colors.criticalSoft;
-  if (s === 'monitoring') return Colors.warningSoft;
-  return Colors.successSoft;
-}
-
-function statusColor(s: string) {
-  if (s === 'critical') return Colors.critical;
-  if (s === 'monitoring') return Colors.warning;
-  return Colors.primary;
+function Separator() {
+  return <View style={styles.separator} />;
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: Colors.background },
-  readOnly: {
-    textAlign: 'center',
-    color: Colors.textMuted,
-    padding: Spacing.md,
-    backgroundColor: Colors.surfaceMuted,
-  },
-  list: { padding: Spacing.lg, paddingBottom: 40 },
-  card: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: Colors.surface,
-    borderRadius: Radius.lg,
-    padding: Spacing.lg,
-    marginBottom: Spacing.md,
-    ...Shadows.card,
-  },
-  name: { fontSize: 16, fontWeight: '700', color: Colors.text },
-  meta: { fontSize: 13, color: Colors.textSecondary, marginTop: 2 },
-  collar: { fontSize: 12, color: Colors.textMuted, marginTop: 4 },
-  badge: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: Radius.pill,
-    marginLeft: 8,
-  },
-  badgeText: { fontSize: 11, fontWeight: '700', textTransform: 'capitalize' },
+  headerContent: { gap: Spacing.sm, paddingBottom: Spacing.lg },
+  rowWrap: { paddingHorizontal: Layout.screenPadding },
+  separator: { height: Spacing.md },
+  badge: { marginTop: Spacing.xs },
 });

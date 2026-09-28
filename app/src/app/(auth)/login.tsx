@@ -1,20 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Animated,
-  Easing,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { useEffect, useState } from 'react';
+import { Animated, Easing, KeyboardAvoidingView, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Button } from '@/components/ui/Card';
-import { Input } from '@/components/ui/Input';
-import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
+import { Banner } from '@/components/ui/Banner';
+import { Button } from '@/components/ui/Button';
+import { BrandMark, HillsEdge } from '@/components/ui/Illustrations';
+import { Text } from '@/components/ui/Text';
+import { TextField } from '@/components/ui/TextField';
+import { Colors, Radius, Shadows, Spacing } from '@/constants/theme';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 
@@ -36,9 +29,10 @@ export default function LoginScreen() {
     setBusy(false);
   };
 
-  // Fade + slide in once on mount — not on re-renders (empty deps, values never reset).
-  const fade = useRef(new Animated.Value(0)).current;
-  const slide = useRef(new Animated.Value(16)).current;
+  // Fade + slide in once on mount. The Animated.Values are created once and
+  // never replaced, so the effect runs a single time.
+  const [fade] = useState(() => new Animated.Value(0));
+  const [slide] = useState(() => new Animated.Value(16));
   useEffect(() => {
     Animated.parallel([
       Animated.timing(fade, {
@@ -54,127 +48,130 @@ export default function LoginScreen() {
         useNativeDriver: true,
       }),
     ]).start();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [fade, slide]);
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.keyboardView}>
-        <Animated.View
-          style={[styles.card, { opacity: fade, transform: [{ translateY: slide }] }]}>
-          <Text style={styles.brand}>FarmTrack</Text>
-          <Text style={styles.subtitle}>Sign in to your ranch</Text>
-          {!isSupabaseConfigured ? (
-            <Text style={styles.demoNote}>Demo mode — Supabase env not configured</Text>
-          ) : null}
-
-          <Input
-            label="Email"
-            autoCapitalize="none"
-            keyboardType="email-address"
-            placeholder="owner@ranch.com"
-            value={email}
-            onChangeText={setEmail}
-            containerStyle={styles.field}
-          />
-
-          <Input
-            label="Password"
-            secureTextEntry
-            placeholder="••••••••"
-            value={password}
-            onChangeText={setPassword}
-            containerStyle={styles.field}
-          />
-
-          {error ? <Text style={styles.error}>{error}</Text> : null}
-
-          <Button
-            label={busy ? 'Signing in…' : 'Sign In'}
-            onPress={onSubmit}
-            disabled={busy || (!email && isSupabaseConfigured)}
-            style={styles.submitBtn}
-            icon={busy ? <ActivityIndicator color="#fff" /> : undefined}
-          />
-
-          <View style={styles.links}>
-            <Pressable onPress={() => signInDemo('admin')} hitSlop={8}>
-              <Text style={styles.link}>Continue as Admin</Text>
-            </Pressable>
-            <Text style={styles.linkDivider}>·</Text>
-            <Pressable onPress={() => signInDemo('staff')} hitSlop={8}>
-              <Text style={styles.link}>Continue as Staff</Text>
-            </Pressable>
+    <View style={styles.root}>
+      <KeyboardAvoidingView style={styles.fill} behavior="padding">
+        <ScrollView
+          contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + Spacing.xxl }]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}>
+          <View style={[styles.hero, { paddingTop: insets.top + Spacing.xxxl }]}>
+            <View style={styles.overscrollCap} />
+            <BrandMark size={88} />
+            <Text variant="display" color="inverse" align="center">
+              FarmTrack
+            </Text>
+            <Text variant="body" color="inverseMuted" align="center">
+              Virtual fences for your herd
+            </Text>
           </View>
-        </Animated.View>
+          <HillsEdge />
+
+          <View style={styles.cardWrap}>
+          <Animated.View style={[styles.card, { opacity: fade, transform: [{ translateY: slide }] }]}>
+            <Text variant="title" accessibilityRole="header">
+              Sign in to your farm
+            </Text>
+
+            {!isSupabaseConfigured ? (
+              <Banner
+                tone="offline"
+                title="Demo mode"
+                message="No Supabase keys in this build, so nothing is saved or shared."
+              />
+            ) : null}
+
+            {isSupabaseConfigured ? (
+              <>
+                <TextField
+                  label="Email"
+                  autoCapitalize="none"
+                  autoComplete="email"
+                  keyboardType="email-address"
+                  textContentType="emailAddress"
+                  placeholder="you@yourfarm.com"
+                  value={email}
+                  onChangeText={setEmail}
+                  returnKeyType="next"
+                />
+                <TextField
+                  label="Password"
+                  secureTextEntry
+                  autoComplete="password"
+                  textContentType="password"
+                  placeholder="••••••••"
+                  value={password}
+                  onChangeText={setPassword}
+                  onSubmitEditing={onSubmit}
+                  returnKeyType="go"
+                />
+              </>
+            ) : null}
+
+            {error ? <Banner tone="critical" title="Could not sign in" message={error} /> : null}
+
+            {isSupabaseConfigured ? (
+              <Button
+                label={busy ? 'Signing in…' : 'Sign in'}
+                icon="login"
+                onPress={onSubmit}
+                loading={busy}
+                disabled={!email || !password}
+              />
+            ) : (
+              // Demo accounts exist only in a build without Supabase keys, so a
+              // published app can never be entered without a real login.
+              <View style={styles.demoButtons}>
+                <Button label="Continue as Admin (demo)" icon="shield-account-outline" onPress={() => signInDemo('admin')} />
+                <Button
+                  label="Continue as Staff (demo)"
+                  icon="account-outline"
+                  variant="secondary"
+                  onPress={() => signInDemo('staff')}
+                />
+              </View>
+            )}
+          </Animated.View>
+          </View>
+        </ScrollView>
       </KeyboardAvoidingView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  keyboardView: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.lg,
-  },
-  card: {
-    width: '100%',
-    maxWidth: 400,
-    backgroundColor: Colors.surface,
-    borderRadius: Radius.xl,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: Spacing.xl,
-  },
-  brand: {
-    ...Typography.h1,
-    fontSize: 28,
-    color: Colors.text,
-    textAlign: 'center',
-  },
-  subtitle: {
-    ...Typography.body,
-    color: Colors.textSecondary,
-    textAlign: 'center',
-    marginTop: Spacing.xs,
-  },
-  demoNote: {
-    ...Typography.caption,
-    color: Colors.textMuted,
-    textAlign: 'center',
-    marginTop: Spacing.xs,
-  },
-  field: {
-    marginTop: Spacing.lg,
-  },
-  error: {
-    ...Typography.caption,
-    color: Colors.critical,
-    marginTop: Spacing.sm,
-  },
-  submitBtn: {
-    marginTop: Spacing.lg,
-  },
-  links: {
-    flexDirection: 'row',
-    justifyContent: 'center',
+  root: { flex: 1, backgroundColor: Colors.background },
+  fill: { flex: 1 },
+  scroll: { flexGrow: 1 },
+  hero: {
     alignItems: 'center',
     gap: Spacing.sm,
-    marginTop: Spacing.lg,
+    paddingHorizontal: Spacing.xxl,
+    paddingBottom: Spacing.xl,
+    backgroundColor: Colors.primaryDark,
   },
-  link: {
-    ...Typography.label,
-    color: Colors.primary,
+  overscrollCap: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: -800,
+    height: 800,
+    backgroundColor: Colors.primaryDark,
   },
-  linkDivider: {
-    color: Colors.border,
+  cardWrap: { paddingHorizontal: Spacing.lg },
+  card: {
+    alignSelf: 'center',
+    width: '100%',
+    maxWidth: 440,
+    gap: Spacing.lg,
+    marginTop: Spacing.sm,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.xxl,
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    ...Shadows.raised,
   },
+  demoButtons: { gap: Spacing.md },
 });

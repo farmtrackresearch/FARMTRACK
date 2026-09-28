@@ -1,31 +1,37 @@
-import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, Vibration, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, ScrollView, StyleSheet, Vibration, View } from 'react-native';
 
 import { CreateFenceModal, type BoundaryTemplate } from '@/components/map/CreateFenceModal';
 import { FenceDrawingPanel } from '@/components/map/FenceDrawingPanel';
 import { FenceListPanel, UndoFenceToast } from '@/components/map/FenceListPanel';
-import RanchMap from '@/components/map/RanchMap';
-import type { MapAppearance, RanchMapHandle } from '@/components/map/RanchMap.types';
+import { MapControls, mapControlsHeight } from '@/components/map/MapControls';
+import { MapLegend } from '@/components/map/MapLegend';
+import { PositionChip, type PositionChipState } from '@/components/map/PositionChip';
+import RanchMap, { mapAttribution } from '@/components/map/RanchMap';
+import type { MapAnimal, MapAppearance, RanchMapHandle } from '@/components/map/RanchMap.types';
 import { SaveBoundaryModal } from '@/components/map/SaveBoundaryModal';
-import { Colors, RANCH_REGION, Radius, Shadows, Spacing, Typography } from '@/constants/theme';
-import { SectionEmoji } from '@/constants/navigation';
+import { AppHeader } from '@/components/ui/AppHeader';
+import { IconButton } from '@/components/ui/IconButton';
+import { Screen } from '@/components/ui/Screen';
+import { Text } from '@/components/ui/Text';
+import { Layout, MapPalette, RANCH_REGION, Radius, Spacing } from '@/constants/theme';
 import {
+  DEFAULT_WARNING_BUFFER_M,
   evaluateAgainstFences,
   FenceEval,
   geoJsonToLatLngs,
   haversineMeters,
   isSelfIntersecting,
+  isStale,
   makeEllipseTemplate,
   makeRectangleTemplate,
+  openRing,
   polygonAreaHectares,
 } from '@/lib/utils';
-import { useAlarm } from '@/hooks/useAlarm';
 import { useFarm } from '@/stores/FarmDataContext';
-import type { MapLatLng } from '@/types/database';
+import type { AnimalStatus, LivestockLocation, MapLatLng } from '@/types/database';
 
 function defaultFenceName(existingCount: number) {
   return `Fence ${existingCount + 1}`;
@@ -38,35 +44,56 @@ function humanMeters(m: number) {
   return `${Math.round(m)} m`;
 }
 
+// A stationary animal still gets a fresh GPS estimate every few seconds, and
+// consumer GPS carries a few metres of error, so the marker would crawl around
+// even when nothing moved. Hold the drawn position until the animal has really
+// travelled further than that noise floor. Display only: the server judges
+// every reading for fence state.
+const STABLE_THRESHOLD_M = 6;
+
+function holdPositions(prev: Record<string, MapLatLng>, locations: LivestockLocation[]) {
+  const next: Record<string, MapLatLng> = {};
+  for (const l of locations) {
+    if (l.latitude == null || l.longitude == null) continue;
+    const incoming: MapLatLng = { latitude: l.latitude, longitude: l.longitude };
+    const held = prev[l.livestock_id];
+    next[l.livestock_id] = held && haversineMeters(held, incoming) < STABLE_THRESHOLD_M ? held : incoming;
+  }
+  return next;
+}
+
 /**
- * MapScreen — live livestock tracking + admin polygon geofence drawing +
- * real-time phone GPS monitor that fires a vibration + alert whenever
- * the device (or any saved livestock) steps outside or approaches a fence.
+ * MapScreen — live livestock positions (fence state decided by the server),
+ * admin polygon fence drawing, and an opt-in check of the phone's own
+ * position against the fences (its own banner; never the livestock siren).
  */
 export default function MapScreen() {
-  const insets = useSafeAreaInsets();
   const router = useRouter();
   const { createFence } = useLocalSearchParams<{ createFence?: string }>();
-  const { locations, geofences, saveGeofence, deleteGeofence, isAdmin, recordFenceCrossing } = useFarm();
-  const { triggerAlarm, dismissAlarm, activeAlarm } = useAlarm();
+  const { locations, geofences, saveGeofence, deleteGeofence, isAdmin, now } = useFarm();
 
   const [mapType, setMapType] = useState<MapAppearance>('standard');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [drawing, setDrawing] = useState(false);
   const [draftPoints, setDraftPoints] = useState<MapLatLng[]>([]);
   const [fenceName, setFenceName] = useState('');
+  const [fenceBuffer, setFenceBuffer] = useState(String(DEFAULT_WARNING_BUFFER_M));
+  const [fenceActive, setFenceActive] = useState(true);
   const [saving, setSaving] = useState(false);
   const [editingFenceId, setEditingFenceId] = useState<string | null>(null);
-  const [fenceListCollapsed, setFenceListCollapsed] = useState(false);
+  // Collapsed by default so the map, not the list, fills the screen.
+  const [fenceListCollapsed, setFenceListCollapsed] = useState(true);
   const [undoCandidate, setUndoCandidate] = useState<{ id: string; name: string } | null>(null);
   const [showSaveConfirm, setShowSaveConfirm] = useState(false);
+  const [legendOpen, setLegendOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   const mapRef = useRef<RanchMapHandle>(null);
 
+  const [checkMyPosition, setCheckMyPosition] = useState(false);
   const [deviceLoc, setDeviceLoc] = useState<MapLatLng | null>(null);
   const [deviceEval, setDeviceEval] = useState<FenceEval | null>(null);
   const [gpsPermDenied, setGpsPermDenied] = useState(false);
-  const lastAlertAtRef = useRef<Record<string, number>>({});
 
   const activeFences = useMemo(
     () =>
@@ -76,7 +103,7 @@ export default function MapScreen() {
           id: g.id,
           name: g.name,
           ring: geoJsonToLatLngs(g.coordinates.coordinates),
-          warningBufferMeters: g.warning_buffer_meters ?? 30,
+          warningBufferMeters: g.warning_buffer_meters ?? DEFAULT_WARNING_BUFFER_M,
         })),
     [geofences]
   );
@@ -89,7 +116,8 @@ export default function MapScreen() {
           id: g.id,
           name: g.name,
           coords: geoJsonToLatLngs(g.coordinates.coordinates),
-          warningBufferMeters: g.warning_buffer_meters ?? 30,
+          warningBufferMeters: g.warning_buffer_meters ?? DEFAULT_WARNING_BUFFER_M,
+          isActive: g.is_active,
         })),
     [geofences, editingFenceId]
   );
@@ -97,43 +125,36 @@ export default function MapScreen() {
   const selfIntersecting = useMemo(() => isSelfIntersecting(draftPoints), [draftPoints]);
   const draftAreaHectares = useMemo(() => polygonAreaHectares(draftPoints), [draftPoints]);
 
-  // The camera's initial bounds only apply once, at first mount — before GPS has
-  // a fix and before fences/livestock have loaded from Supabase. Two effects move
-  // it off the hardcoded Montana placeholder (RANCH_REGION), each running once.
+  // Derived from the previous render's held positions (React's "store info
+  // from previous renders" pattern) instead of mutating a ref inside useMemo.
+  const [heldFor, setHeldFor] = useState(locations);
+  const [heldPositions, setHeldPositions] = useState(() => holdPositions({}, locations));
+  if (heldFor !== locations) {
+    setHeldFor(locations);
+    setHeldPositions(holdPositions(heldPositions, locations));
+  }
 
-  // A stationary animal still gets a brand-new GPS estimate every 3 seconds, and
-  // consumer GPS carries a few metres of random error, so the marker crawls
-  // around even when nothing has moved. Hold the drawn position until the
-  // animal has genuinely travelled further than that noise floor.
-  //
-  // Display only: detect_geofence_events() still evaluates every raw reading
-  // server-side, so breach and warning alerts are unaffected by this.
-  const STABLE_THRESHOLD_M = 6;
-  const heldPositionsRef = useRef<Record<string, MapLatLng>>({});
-  const stableLocations = useMemo(
+  const mapAnimals = useMemo<MapAnimal[]>(
     () =>
       locations.map((l) => {
-        if (l.latitude == null || l.longitude == null) return l;
-        const incoming: MapLatLng = { latitude: l.latitude, longitude: l.longitude };
-        const held = heldPositionsRef.current[l.livestock_id];
-        if (held && haversineMeters(held, incoming) < STABLE_THRESHOLD_M) {
-          return { ...l, latitude: held.latitude, longitude: held.longitude };
-        }
-        heldPositionsRef.current[l.livestock_id] = incoming;
-        return l;
+        const held = heldPositions[l.livestock_id];
+        return {
+          ...l,
+          latitude: held?.latitude ?? l.latitude,
+          longitude: held?.longitude ?? l.longitude,
+          stale: isStale(l.last_seen_at, now),
+        };
       }),
-    [locations]
+    [locations, heldPositions, now]
   );
 
-  // Frame the collars, not the phone. The phone is whoever is holding it, not a
-  // tracked animal; opening the map on it pushes the collars off screen, which
-  // is the one thing this screen exists to show. Fence corners are included so
-  // an animal and the fence it is being judged against are visible together.
-  // The "center on me" control still recenters on the phone on demand.
+  // Frame the collars, not the phone. Fence corners are included so an animal
+  // and the fence it is judged against are visible together. The camera
+  // starts on RANCH_REGION and moves here once data first arrives.
   const hasAutoFitRef = useRef(false);
   useEffect(() => {
     if (hasAutoFitRef.current) return;
-    const collarCoords = stableLocations
+    const collarCoords = mapAnimals
       .filter((l) => l.latitude != null && l.longitude != null)
       .map((l) => ({ latitude: l.latitude as number, longitude: l.longitude as number }));
     const fenceCoords = polygons.flatMap((p) => p.coords);
@@ -145,116 +166,99 @@ export default function MapScreen() {
       edgePadding: { top: 80, right: 60, bottom: 180, left: 60 },
       animated: false,
     });
-  }, [polygons, stableLocations]);
+  }, [polygons, mapAnimals]);
 
-  useEffect(() => {
-    if (createFence === '1' && isAdmin) {
+  // Dashboard "Create New Fence" arrives as ?createFence=1: open the create
+  // sheet once (state adjusted during render), then clear the param.
+  const wantsCreate = createFence === '1' && isAdmin;
+  const [createRequestSeen, setCreateRequestSeen] = useState(false);
+  if (wantsCreate !== createRequestSeen) {
+    setCreateRequestSeen(wantsCreate);
+    if (wantsCreate) {
       setEditingFenceId(null);
       setFenceName(defaultFenceName(geofences.length));
+      setFenceBuffer(String(DEFAULT_WARNING_BUFFER_M));
+      setFenceActive(true);
       setShowCreateModal(true);
-      router.setParams({ createFence: undefined });
     }
-  }, [createFence, geofences.length, isAdmin, router]);
-
-  // Phone GPS listener: permission + subscription
+  }
   useEffect(() => {
-    let mounted = true;
-    let sub: Location.LocationSubscription | null = null;
+    if (createFence === '1') router.setParams({ createFence: undefined });
+  }, [createFence, router]);
 
-    (async () => {
-      try {
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') {
-          if (mounted) setGpsPermDenied(true);
-          return;
-        }
-        sub = await Location.watchPositionAsync(
-          {
-            accuracy: Location.Accuracy.BestForNavigation,
-            distanceInterval: 2,
-            timeInterval: 2000,
-          },
-          (update) => {
-            if (!mounted) return;
-            const pt: MapLatLng = {
-              latitude: update.coords.latitude,
-              longitude: update.coords.longitude,
-            };
-            setDeviceLoc(pt);
+  // Phone position check. Opt-in, and only while this tab is focused, so the
+  // app never tracks the farmer in the background. The watcher reads fences
+  // and the previous status from refs, so it never works on stale values.
+  const activeFencesRef = useRef(activeFences);
+  const deviceStatusRef = useRef<AnimalStatus | null>(null);
+  useEffect(() => {
+    activeFencesRef.current = activeFences;
+  }, [activeFences]);
 
-            // Silent evaluation first, only fire recordFenceCrossing when state changes
-            // to avoid pushAlert / setLiveAlert churn on every tick.
-            const nextEval = activeFences.length
-              ? evaluateAgainstFences(pt, activeFences)
-              : {
-                  state: 'grazing' as const,
-                  fenceId: null,
-                  fenceName: null,
-                  distanceMeters: Number.POSITIVE_INFINITY,
-                  insideAnyFence: false,
-                };
+  useFocusEffect(
+    useCallback(() => {
+      if (!checkMyPosition) return;
+      let cancelled = false;
+      let sub: Location.LocationSubscription | null = null;
 
-            const prev = deviceEvalRef.current;
-            const transition =
-              !prev || prev.state !== nextEval.state || prev.fenceId !== nextEval.fenceId;
-            if (transition && (nextEval.state === 'breach' || nextEval.state === 'warning')) {
-              const key = `${nextEval.state}-${nextEval.fenceId ?? 'any'}`;
-              const now = Date.now();
-              const last = lastAlertAtRef.current[key] ?? 0;
-              const silent = now - last < 30_000;
-              if (!silent) {
-                lastAlertAtRef.current[key] = now;
-                void triggerAlarm({
-                  severity: nextEval.state === 'breach' ? 'breach' : 'warning',
-                  title:
-                    nextEval.state === 'breach'
-                      ? nextEval.fenceName
-                        ? `You left ${nextEval.fenceName}`
-                        : 'Fence breach detected'
-                      : nextEval.fenceName
-                        ? `Approaching ${nextEval.fenceName} edge`
-                        : 'Approaching fence boundary',
-                  message: nextEval.fenceName
-                    ? `Your device is ~${Math.round(nextEval.distanceMeters)}m from the boundary of ${nextEval.fenceName}.`
-                    : `Your device is ~${Math.round(nextEval.distanceMeters)}m from the nearest active fence.`,
-                  fenceName: nextEval.fenceName,
-                  sourceId: 'phone',
-                });
-              }
-              recordFenceCrossing(pt, {
-                subjectId: 'phone',
-                subjectName: 'Your device',
-                silent,
-              });
-            } else if (
-              transition &&
-              prev &&
-              (prev.state === 'breach' || prev.state === 'warning') &&
-              nextEval.state === 'inside'
-            ) {
-              if (activeAlarm?.sourceId === 'phone') {
-                void dismissAlarm();
-              }
-              Vibration.vibrate(50);
-            }
-
-            deviceEvalRef.current = nextEval;
-            setDeviceEval(nextEval);
+      (async () => {
+        try {
+          const { status } = await Location.requestForegroundPermissionsAsync();
+          if (cancelled) return;
+          if (status !== 'granted') {
+            setGpsPermDenied(true);
+            setCheckMyPosition(false);
+            return;
           }
-        );
-      } catch (err) {
-        console.warn('[MapScreen] GPS watch failed:', err);
-      }
-    })();
+          setGpsPermDenied(false);
+          const watcher = await Location.watchPositionAsync(
+            { accuracy: Location.Accuracy.High, distanceInterval: 2, timeInterval: 2000 },
+            (update) => {
+              if (cancelled) return;
+              const pt: MapLatLng = {
+                latitude: update.coords.latitude,
+                longitude: update.coords.longitude,
+              };
+              const prev = deviceStatusRef.current;
+              const ev = evaluateAgainstFences(pt, activeFencesRef.current, prev);
+              deviceStatusRef.current = ev.status;
+              if (prev !== null && prev !== ev.status && (ev.status === 'breach' || ev.status === 'near_boundary')) {
+                Vibration.vibrate(200);
+              }
+              setDeviceLoc(pt);
+              setDeviceEval(ev);
+            }
+          );
+          // The screen lost focus or unmounted while we were waiting.
+          if (cancelled) watcher.remove();
+          else sub = watcher;
+        } catch (err) {
+          console.warn('[MapScreen] GPS watch failed:', err);
+        }
+      })();
 
-    return () => {
-      mounted = false;
-      if (sub) sub.remove();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeFences.length]);
+      return () => {
+        cancelled = true;
+        sub?.remove();
+        sub = null;
+        // Also drop the last fix: while it is set the map keeps <UserLocation/>
+        // mounted, which runs native GPS even on other tabs.
+        setDeviceLoc(null);
+        setDeviceEval(null);
+      };
+    }, [checkMyPosition])
+  );
 
-  const deviceEvalRef = useRef<FenceEval | null>(null);
+  const togglePositionCheck = () => {
+    if (checkMyPosition) {
+      setCheckMyPosition(false);
+      setDeviceLoc(null);
+      setDeviceEval(null);
+      deviceStatusRef.current = null;
+    } else {
+      setCheckMyPosition(true);
+    }
+  };
 
   const openCreateModal = () => {
     if (!isAdmin) {
@@ -263,6 +267,8 @@ export default function MapScreen() {
     }
     setEditingFenceId(null);
     setFenceName(defaultFenceName(geofences.length));
+    setFenceBuffer(String(DEFAULT_WARNING_BUFFER_M));
+    setFenceActive(true);
     setShowCreateModal(true);
   };
 
@@ -295,19 +301,12 @@ export default function MapScreen() {
   const startEditingFence = (id: string) => {
     const fence = geofences.find((g) => g.id === id);
     if (!fence) return;
-    const coords = geoJsonToLatLngs(fence.coordinates.coordinates);
     // Polygon ring wraps back to the start; drop the duplicate closing vertex for editing.
-    const unique = coords.length > 2
-      ? coords.filter(
-          (c, i, arr) =>
-            i === 0 ||
-            i !== arr.length - 1 ||
-            Math.abs(c.latitude - arr[0].latitude) > 1e-6 ||
-            Math.abs(c.longitude - arr[0].longitude) > 1e-6
-        )
-      : coords;
+    const unique = openRing(geoJsonToLatLngs(fence.coordinates.coordinates));
     setEditingFenceId(id);
     setFenceName(fence.name);
+    setFenceBuffer(String(fence.warning_buffer_meters ?? DEFAULT_WARNING_BUFFER_M));
+    setFenceActive(fence.is_active);
     setDraftPoints(unique);
     setShowCreateModal(false);
     setDrawing(true);
@@ -359,17 +358,32 @@ export default function MapScreen() {
     setShowSaveConfirm(true);
   };
 
+  const parsedBuffer = Number(fenceBuffer.replace(',', '.'));
+  const bufferValid = fenceBuffer.trim() !== '' && Number.isFinite(parsedBuffer) && parsedBuffer >= 1 && parsedBuffer <= 500;
+
   const confirmSave = async () => {
+    if (!bufferValid) {
+      Alert.alert('Check the warning distance', 'Enter a warning distance between 1 and 500 metres.');
+      return;
+    }
     setShowSaveConfirm(false);
     await performSave();
   };
 
+  // On failure the drawing stays open with every point intact, so the admin
+  // can fix the problem and save again.
   const performSave = async () => {
     const name = fenceName.trim() || 'Untitled Fence';
     try {
       setSaving(true);
       const savedCoords: MapLatLng[] = [...draftPoints];
-      const savedId = await saveGeofence(name, draftPoints, editingFenceId ?? undefined);
+      const savedId = await saveGeofence({
+        id: editingFenceId ?? undefined,
+        name,
+        points: draftPoints,
+        isActive: fenceActive,
+        warningBufferMeters: parsedBuffer,
+      });
       const wasNew = !editingFenceId;
       setDrawing(false);
       setDraftPoints([]);
@@ -388,7 +402,7 @@ export default function MapScreen() {
         setUndoCandidate(null);
       }
       if (wasNew) {
-        Alert.alert('Fence saved', `${name} is now active.`, [
+        Alert.alert('Fence saved', fenceActive ? `${name} is now active.` : `${name} is saved but switched off.`, [
           { text: 'Show me', onPress: () => mapRef.current?.fitToCoordinates(savedCoords) },
           { text: 'OK', style: 'cancel' },
         ]);
@@ -445,150 +459,171 @@ export default function MapScreen() {
   };
 
   const onFencePress = (id: string, name: string) => {
-    if (!isAdmin) {
-      focusFence(id);
-      return;
-    }
     if (drawing) return;
+    focusFence(id);
+    if (!isAdmin) return;
+    // Android shows at most three alert buttons, so zooming happens on tap.
     Alert.alert(name, 'Manage this virtual fence', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Zoom here', onPress: () => focusFence(id) },
-      {
-        text: 'Edit Shape',
-        style: 'default',
-        onPress: () => startEditingFence(id),
-      },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: () => onDeleteFence(id, name),
-      },
+      { text: 'Edit', onPress: () => startEditingFence(id) },
+      { text: 'Delete', style: 'destructive', onPress: () => onDeleteFence(id, name) },
     ]);
   };
 
-  const probeBadgeTone =
-    !deviceEval || deviceEval.state === 'grazing'
-      ? styles.probeSafe
-      : deviceEval.state === 'inside'
-        ? styles.probeInside
-        : deviceEval.state === 'warning'
-          ? styles.probeWarning
-          : styles.probeBreach;
+  const probe = ((): PositionChipState => {
+    if (!checkMyPosition) {
+      return gpsPermDenied
+        ? { kind: 'denied', label: 'Location permission denied' }
+        : { kind: 'off', label: 'Check my position' };
+    }
+    if (!deviceEval) return { kind: 'finding', label: 'Finding your position…' };
+    const where = deviceEval.fenceName ?? 'the fence';
+    switch (deviceEval.status) {
+      case 'breach':
+        return { kind: 'breach', label: `You are outside ${where} · ${humanMeters(deviceEval.distanceMeters)}` };
+      case 'near_boundary':
+        return { kind: 'near', label: `Near the edge of ${where} · ${humanMeters(deviceEval.distanceMeters)}` };
+      default:
+        return deviceEval.fenceId
+          ? { kind: 'inside', label: `Inside ${where} · ${humanMeters(deviceEval.distanceMeters)} from the edge` }
+          : { kind: 'none', label: 'No active fences' };
+    }
+  })();
 
-  const probeLabel =
-    !deviceEval || gpsPermDenied
-      ? 'GPS off'
-      : deviceEval.state === 'inside'
-        ? `${deviceEval.fenceName ? deviceEval.fenceName + ' · ' : ''}safe · ${humanMeters(deviceEval.distanceMeters)} from edge`
-        : deviceEval.state === 'warning'
-          ? `⚠ Near ${deviceEval.fenceName ?? 'fence'} · ${humanMeters(deviceEval.distanceMeters)}`
-          : deviceEval.state === 'breach'
-            ? `🚨 Outside ${deviceEval.fenceName ?? 'pasture'} · ${humanMeters(deviceEval.distanceMeters)}`
-            : `Looking for fences… ${humanMeters(deviceEval.distanceMeters)}`;
+  const staleCount = mapAnimals.filter((a) => a.stale).length;
+  const outsideCount = mapAnimals.filter((a) => !a.stale && a.animal_status === 'breach').length;
+  const headerSubtitle =
+    mapAnimals.length === 0
+      ? `${geofences.length} fence${geofences.length === 1 ? '' : 's'} · no collar positions yet`
+      : [
+          `${mapAnimals.length} animal${mapAnimals.length === 1 ? '' : 's'}`,
+          outsideCount > 0 ? `${outsideCount} outside` : null,
+          staleCount > 0 ? `${staleCount} without a recent fix` : null,
+        ]
+          .filter(Boolean)
+          .join(' · ');
+
+  const canLocate = Boolean(deviceLoc && checkMyPosition);
+  const controlsHeight = mapControlsHeight({ locate: canLocate, appearance: !drawing, pickerOpen });
+
+  const fenceItems = polygons.map((p) => {
+    const raw = geofences.find((g) => g.id === p.id);
+    return {
+      id: p.id,
+      name: p.name,
+      pointCount: openRing(p.coords).length,
+      isActive: raw?.is_active ?? true,
+      bufferMeters: p.warningBufferMeters,
+    };
+  });
 
   return (
-    <View style={styles.root}>
-      <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.title}>{SectionEmoji.map} Live Map</Text>
-          <Text style={styles.subtitle}>Real-time livestock tracking</Text>
-          <View style={[styles.probe, probeBadgeTone]}>
-            <MaterialCommunityIcons
-              name={
-                !deviceEval || gpsPermDenied
-                  ? 'crosshairs-off'
-                  : deviceEval.state === 'breach'
-                    ? 'alert-decagram'
-                    : deviceEval.state === 'warning'
-                      ? 'alert-circle-outline'
-                      : 'crosshairs-gps'
-              }
-              size={14}
-              color={
-                !deviceEval || gpsPermDenied
-                  ? Colors.textSecondary
-                  : deviceEval.state === 'breach' || deviceEval.state === 'warning'
-                    ? '#fff'
-                    : Colors.primaryDark
-              }
+    <Screen
+      mode="fixed"
+      header={
+        <AppHeader
+          compact
+          edge="overlay"
+          title="Live map"
+          subtitle={headerSubtitle}
+          titleLines={1}
+          right={
+            <IconButton
+              icon={legendOpen ? 'map-legend' : 'information-outline'}
+              variant="onDark"
+              selected={legendOpen}
+              onPress={() => setLegendOpen((v) => !v)}
+              accessibilityLabel={legendOpen ? 'Hide map legend' : 'Show map legend'}
             />
-            <Text
-              numberOfLines={1}
-              style={[
-                styles.probeText,
-                (!deviceEval || gpsPermDenied) && { color: Colors.textSecondary },
-                (deviceEval?.state === 'breach' || deviceEval?.state === 'warning') && {
-                  color: '#fff',
-                },
-              ]}>
-              {probeLabel}
-            </Text>
-          </View>
-        </View>
-      </View>
-
+          }
+        />
+      }>
       <View style={styles.mapWrap}>
         <RanchMap
           ref={mapRef}
           mapType={mapType}
-          onMapTypeChange={setMapType}
-          deviceLocation={deviceLoc}
-          locations={stableLocations}
+          deviceLocation={checkMyPosition ? deviceLoc : null}
+          locations={mapAnimals}
           polygons={polygons}
           draftPoints={draftPoints}
           drawing={drawing}
           onPressCoordinate={onPressCoordinate}
           onDragVertex={onDragVertex}
           onDeleteVertex={onDeleteVertex}
-          onMarkerPress={(id) => router.push(`/livestock/${id}`)}
+          onMarkerPress={(id) => router.push({ pathname: '/livestock/[id]', params: { id } })}
           onFencePress={onFencePress}
+          onMapPress={() => setPickerOpen(false)}
         />
 
-        {!drawing ? (
-          <FenceListPanel
-            items={polygons.map((p) => {
-              const raw = geofences.find((g) => g.id === p.id);
-              return {
-                id: p.id,
-                name: p.name,
-                pointCount: p.coords.length,
-                isActive: raw?.is_active ?? true,
-              };
-            })}
-            collapsed={fenceListCollapsed}
-            onToggleCollapsed={() => setFenceListCollapsed((v) => !v)}
-            onFocus={focusFence}
-            onDelete={onDeleteFence}
-            isAdmin={Boolean(isAdmin)}
-          />
-        ) : null}
+        {/* Every floating element lives in this one column, so no two can
+            ever take the same space. Top row: status chip (+ legend) beside
+            the controls; it never gets shorter than the controls. Bottom:
+            toast, credit line and the sheet, whose list scrolls when space
+            runs short while its header stays visible. */}
+        <View style={styles.overlay} pointerEvents="box-none">
+          <View style={[styles.topRow, { minHeight: controlsHeight }]} pointerEvents="box-none">
+            <View style={styles.topLeft} pointerEvents="box-none">
+              <PositionChip state={probe} on={checkMyPosition} onToggle={togglePositionCheck} />
+              {legendOpen && !drawing ? (
+                <ScrollView style={styles.legendScroll} bounces={false} showsVerticalScrollIndicator={false}>
+                  <MapLegend />
+                </ScrollView>
+              ) : null}
+            </View>
+            <MapControls
+              onZoomIn={() => mapRef.current?.zoomBy(1)}
+              onZoomOut={() => mapRef.current?.zoomBy(-1)}
+              onLocate={canLocate && deviceLoc ? () => mapRef.current?.fitToCoordinates([deviceLoc]) : undefined}
+              mapType={mapType}
+              onMapTypeChange={(next) => {
+                setMapType(next);
+                setPickerOpen(false);
+              }}
+              pickerOpen={pickerOpen}
+              onTogglePicker={() => setPickerOpen((v) => !v)}
+              showAppearance={!drawing}
+            />
+          </View>
 
-        {undoCandidate && !drawing ? (
-          <UndoFenceToast
-            fenceName={undoCandidate.name}
-            onUndo={undoLastSave}
-            onDismiss={() => setUndoCandidate(null)}
-          />
-        ) : null}
+          {undoCandidate && !drawing ? (
+            <UndoFenceToast
+              fenceName={undoCandidate.name}
+              onUndo={undoLastSave}
+              onDismiss={() => setUndoCandidate(null)}
+            />
+          ) : null}
 
-        {drawing ? (
-          <FenceDrawingPanel
-            fenceName={fenceName.trim() || 'Untitled Fence'}
-            pointCount={draftPoints.length}
-            saving={saving}
-            selfIntersecting={selfIntersecting}
-            onClose={cancelDrawing}
-            onSave={requestSave}
-            onUndo={undoLastPoint}
-            onClearAll={clearAllPoints}
-            canUndo={draftPoints.length > 0}
-            isEditing={Boolean(editingFenceId)}
-          />
-        ) : (
-          <Pressable style={styles.fab} onPress={openCreateModal}>
-            <MaterialCommunityIcons name="plus" size={28} color="#fff" />
-          </Pressable>
-        )}
+          <View style={styles.credit} pointerEvents="none">
+            <Text variant="caption" color="secondary" numberOfLines={1} style={styles.creditText} maxFontSizeMultiplier={1}>
+              {mapAttribution(mapType)}
+            </Text>
+          </View>
+
+          {drawing ? (
+            <FenceDrawingPanel
+              fenceName={fenceName.trim() || 'Untitled Fence'}
+              pointCount={draftPoints.length}
+              saving={saving}
+              selfIntersecting={selfIntersecting}
+              onClose={cancelDrawing}
+              onSave={requestSave}
+              onUndo={undoLastPoint}
+              onClearAll={clearAllPoints}
+              canUndo={draftPoints.length > 0}
+              isEditing={Boolean(editingFenceId)}
+            />
+          ) : (
+            <FenceListPanel
+              items={fenceItems}
+              collapsed={fenceListCollapsed}
+              onToggleCollapsed={() => setFenceListCollapsed((v) => !v)}
+              onFocus={focusFence}
+              onDelete={onDeleteFence}
+              onCreate={openCreateModal}
+              isAdmin={Boolean(isAdmin)}
+            />
+          )}
+        </View>
       </View>
 
       <CreateFenceModal
@@ -605,65 +640,49 @@ export default function MapScreen() {
         fenceName={fenceName.trim() || 'Untitled Fence'}
         areaHectares={draftAreaHectares}
         pointCount={draftPoints.length}
+        bufferMeters={fenceBuffer}
+        onChangeBufferMeters={setFenceBuffer}
+        bufferValid={bufferValid}
+        isActive={fenceActive}
+        onChangeActive={setFenceActive}
         saving={saving}
         onCancel={() => setShowSaveConfirm(false)}
         onConfirm={confirmSave}
       />
-    </View>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: Colors.background },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.md,
-    backgroundColor: Colors.surface,
-    gap: Spacing.sm,
-  },
-  title: { ...Typography.h1, fontSize: 26, color: Colors.text },
-  subtitle: { fontSize: 13, color: Colors.textSecondary, marginTop: 2 },
-  probe: {
-    marginTop: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: Radius.sm,
-  },
-  probeSafe: {
-    backgroundColor: Colors.surfaceVariant,
-  },
-  probeInside: {
-    backgroundColor: '#E3F1DC',
-  },
-  probeWarning: {
-    backgroundColor: Colors.warning,
-  },
-  probeBreach: {
-    backgroundColor: Colors.critical,
-  },
-  probeText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: Colors.primaryDark,
-  },
-  mapWrap: { flex: 1 },
-  fab: {
+  // Tucked under the header's hills edge, which is drawn over the map.
+  mapWrap: { flex: 1, overflow: 'hidden', marginTop: -Layout.hillsHeightCompact },
+  overlay: {
     position: 'absolute',
-    right: 20,
-    bottom: 24,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: Colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Shadows.card,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    paddingTop: Layout.hillsHeightCompact + Spacing.sm,
   },
+  topRow: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+  },
+  topLeft: { flex: 1, minWidth: 0, maxHeight: '100%', gap: Spacing.sm, alignItems: 'flex-start' },
+  legendScroll: { flexGrow: 0, flexShrink: 1, alignSelf: 'stretch', overflow: 'visible' },
+  credit: {
+    alignSelf: 'flex-end',
+    maxWidth: '100%',
+    marginHorizontal: Spacing.md,
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.xs,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: Radius.sm,
+    backgroundColor: MapPalette.attributionBg,
+  },
+  creditText: { fontSize: 10, lineHeight: 14 },
 });

@@ -9,6 +9,40 @@ link to the run that produced it. Every value must be traceable to a
 Do not add a number to this table that was not measured. Leave a row blank and
 say what is missing instead.
 
+## Firmware and database change: protocol v2 (after the 2026-09-24 run)
+
+No new measurements have been taken on the v2 build. Nothing in this file has
+been measured on it yet. What changed, and what it means for future rows:
+
+- **Every row must name its build.** Collar and gateway moved to protocol v2
+  (`PROTO_VERSION 2`), and both boards must run it together. Record the git
+  commit and the md5 of `collar.cpp`, `gateway.cpp`, `packet.h` and `pins.h`
+  for each run. Do not pool v1 and v2 results in one row without saying so.
+- **Collar ID.** It changed (now `ESP.getEfuseMac() >> 16`, printed
+  `FT-%08X`). `FT-EC82C34C` was the v1 ID of the same collar.
+- **Send interval.** `SEND_INTERVAL` is 3 s again, with ±10% random jitter.
+  The working-tree `collar.cpp` had been set to a 30 s diagnostic interval
+  after the 2026-09-24 run.
+- **Timestamps.** `gpsEpoch` now carries real GPS time when the fix is valid.
+  In `location_logs`, `timestamp` becomes the GPS fix time when the collar
+  sends one, and the new `received_at` is the server receipt time. Rows
+  stored before the migration have `received_at` back-filled from
+  `timestamp`, and for them both are upload times.
+- **New columns.** `location_logs` also gains `seq`, `rssi`, `snr`,
+  `gateway_id` and `sats`.
+- **Satellites.** The satellites field in the packet is satellites *used in
+  the fix* (NMEA GGA), not satellites in view. This was also true of the v1
+  build. Label any future satellite row accordingly.
+- **Analysis script.** `scripts/analyze_gateway_log.py` now:
+  - splits `seq` at collar reboots and at the uint16 wrap before computing PDR;
+  - handles measurement windows that cross midnight;
+  - reports the v2 gateway fields (`gps_ok`, `gps_rst`, upload latency, heap,
+    `maxblk`, late replies, queue drops, reset reasons).
+
+  Its whole-log PDR for the 2026-09-24 log is therefore different from what
+  the earlier version printed. Neither figure is a range metric, and neither
+  is entered in any table here.
+
 ## GPS
 
 | Metric | Value | n | Conditions | Date | Run |
@@ -44,13 +78,17 @@ table above because corrupted packets were being accepted as valid at the time.
 
 ## Not testable yet
 
-- **Battery level / low-battery alert.** `UplinkPacket.battery` is hardcoded to
-  85 in `collar.cpp`; there is no fuel gauge on the prototype. Nothing about
-  battery state is measured, and the low-battery alert cannot be tested until
-  real sensing exists. Do not report a battery figure.
-- **Alert latency.** `gpsEpoch` is always 0, so Supabase timestamps are upload
-  times, not fix times. Latency needs an external time reference (phone video
-  or stopwatch) and has not been run.
+- **Battery level / low-battery alert.** The v1 collar hard-coded
+  `UplinkPacket.battery` to 85. The v2 collar sends 255 ("unknown", stored as
+  NULL) until a battery voltage divider is fitted and `BATTERY_SENSE_ENABLED`
+  is set. Nothing about battery state is measured, and the low-battery alert
+  cannot be tested until real sensing exists. Do not report a battery figure.
+- **Alert latency.** Not yet run.
+  - **v1:** `gpsEpoch` was always 0, so Supabase timestamps are upload times,
+    not fix times.
+  - **v2:** fix-to-server time can be read as `received_at − timestamp` on
+    rows with a GPS time (1-second resolution). The time the collar crossed
+    the line still needs an external reference (phone video or stopwatch).
 
 ## Pass criteria
 

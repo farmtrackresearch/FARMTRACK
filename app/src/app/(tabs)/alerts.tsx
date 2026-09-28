@@ -1,118 +1,157 @@
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useMemo } from 'react';
-import { SectionList, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useMemo, useState } from 'react';
+import { Alert as NativeAlert, RefreshControl, SectionList, StyleSheet, View } from 'react-native';
 
 import { AlertCard, alertMeta } from '@/components/alerts/AlertCard';
-import { GlassStat, GradientHeader } from '@/components/ui/GradientHeader';
-import { Colors, Radius, Spacing } from '@/constants/theme';
-import { SectionEmoji } from '@/constants/navigation';
+import { AppHeader } from '@/components/ui/AppHeader';
+import { CountBadge } from '@/components/ui/Badge';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { Screen, screenContent, useBottomSpace } from '@/components/ui/Screen';
+import { StatRow, StatTile } from '@/components/ui/StatTile';
+import { Text } from '@/components/ui/Text';
+import { IconName, Tone, ToneColors } from '@/components/ui/tones';
+import { Colors, Spacing } from '@/constants/theme';
 import { useFarm } from '@/stores/FarmDataContext';
 import type { Alert } from '@/types/database';
 
+type AlertSection = { title: string; key: string; data: Alert[]; tone: Tone; icon: IconName };
+
 /**
- * AlertsScreen — chronological activity feed with realtime inserts
- * via Supabase channel (wired in useFarmData).
+ * AlertsScreen — chronological activity feed, kept current by the realtime
+ * subscriptions in useFarmData. Fence alerts resolve themselves when the
+ * server sees the animal back inside; Resolve is for clearing the rest.
  */
 export default function AlertsScreen() {
   const router = useRouter();
-  const { alerts, alertCounts, resolveAlert } = useFarm();
+  const { alerts, alertCounts, resolveAlert, livestock, refresh } = useFarm();
+  const bottom = useBottomSpace();
+  const [refreshing, setRefreshing] = useState(false);
 
-  const sections = useMemo(() => {
+  const sections = useMemo<AlertSection[]>(() => {
     const unresolved = alerts.filter((a) => a.status === 'unresolved');
     const critical = unresolved.filter((a) => alertMeta(a.alert_type).section === 'critical');
     const warning = unresolved.filter((a) => alertMeta(a.alert_type).section === 'warning');
     const info = unresolved.filter((a) => alertMeta(a.alert_type).section === 'info');
     const resolved = alerts.filter((a) => a.status === 'resolved');
 
-    return [
-      { title: 'Critical', key: 'critical', data: critical, color: Colors.critical },
-      { title: 'Warnings', key: 'warning', data: warning, color: Colors.warning },
-      { title: 'Information', key: 'info', data: info, color: Colors.info },
-      { title: 'Resolved', key: 'resolved', data: resolved, color: Colors.textMuted },
-    ].filter((s) => s.data.length > 0);
+    const all: AlertSection[] = [
+      { title: 'Critical', key: 'critical', data: critical, tone: 'critical', icon: 'alert-octagon-outline' },
+      { title: 'Warnings', key: 'warning', data: warning, tone: 'warning', icon: 'alert-outline' },
+      { title: 'Information', key: 'info', data: info, tone: 'info', icon: 'information-outline' },
+      { title: 'Resolved', key: 'resolved', data: resolved, tone: 'neutral', icon: 'check-all' },
+    ];
+    return all.filter((s) => s.data.length > 0);
   }, [alerts]);
 
-  const onPressAlert = (alert: Alert) => {
-    if (alert.livestock_id) {
-      router.push(`/livestock/${alert.livestock_id}`);
-    }
-    if (alert.status === 'unresolved') {
-      void resolveAlert(alert.id);
+  const openAnimal = useCallback(
+    (alert: Alert) => {
+      if (alert.livestock_id) router.push(`/livestock/${alert.livestock_id}`);
+    },
+    [router]
+  );
+
+  const confirmResolve = useCallback(
+    (alert: Alert) => {
+      const animal = livestock.find((l) => l.id === alert.livestock_id);
+      const stillOut =
+        (alert.alert_type === 'boundary_breach' && animal?.animal_status === 'breach') ||
+        (alert.alert_type === 'approach_warning' && animal?.animal_status === 'near_boundary');
+      NativeAlert.alert(
+        'Resolve this alert?',
+        stillOut
+          ? `${animal?.name ?? 'The animal'} is still ${alert.alert_type === 'boundary_breach' ? 'outside the fence' : 'near the fence'}. Resolving only removes this alert from the list.`
+          : 'It moves to Resolved and stays in the history.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Resolve',
+            onPress: () => {
+              resolveAlert(alert.id).catch((err: unknown) =>
+                NativeAlert.alert('Could not resolve', err instanceof Error ? err.message : 'Unknown error')
+              );
+            },
+          },
+        ]
+      );
+    },
+    [livestock, resolveAlert]
+  );
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setRefreshing(false);
     }
   };
 
-  return (
-    <View style={styles.root}>
-      <GradientHeader
-        title={`${SectionEmoji.alerts} Alerts & Events`}
-        subtitle="Chronological activity feed"
-        colors={[Colors.primaryDark, Colors.headerEnd]}>
-        <View style={styles.stats}>
-          <GlassStat label="Critical" value={alertCounts.critical} valueColor="#FF8A80" />
-          <GlassStat label="Warning" value={alertCounts.warning} valueColor="#FFCC80" />
-          <GlassStat label="Info" value={alertCounts.info} valueColor="#80CBC4" />
-        </View>
-      </GradientHeader>
+  const header = (
+    <AppHeader inScroll overline="Activity" title="Alerts" subtitle="Newest first. Fence alerts clear themselves.">
+      <StatRow>
+        <StatTile icon="alert-octagon-outline" label="Critical" value={alertCounts.critical} attention={alertCounts.critical > 0} />
+        <StatTile icon="alert-outline" label="Warnings" value={alertCounts.warning} attention={alertCounts.warning > 0} />
+        <StatTile icon="information-outline" label="Info" value={alertCounts.info} />
+      </StatRow>
+    </AppHeader>
+  );
 
+  return (
+    <Screen mode="fixed">
       <SectionList
         sections={sections}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.list}
+        ListHeaderComponent={header}
+        contentContainerStyle={{ paddingBottom: bottom }}
         stickySectionHeadersEnabled={false}
-        renderSectionHeader={({ section }) => (
-          <View style={styles.sectionHead}>
-            <View style={[styles.bar, { backgroundColor: section.color }]} />
-            <Text style={styles.sectionTitle}>{section.title}</Text>
-            <View style={[styles.countPill, { backgroundColor: section.color }]}>
-              <Text style={styles.countText}>{section.data.length}</Text>
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => void onRefresh()}
+            tintColor={Colors.textInverse}
+            colors={[Colors.primary]}
+          />
+        }
+        renderSectionHeader={({ section }) => {
+          const c = ToneColors[section.tone];
+          return (
+            <View style={[screenContent, styles.sectionHead]} accessibilityRole="header">
+              <MaterialCommunityIcons name={section.icon} size={20} color={c.color} />
+              <Text variant="title" style={styles.sectionTitle}>
+                {section.title}
+              </Text>
+              <CountBadge count={section.data.length} tone={section.tone} />
             </View>
+          );
+        }}
+        renderItem={({ item }) => (
+          <View style={styles.item}>
+            <AlertCard
+              alert={item}
+              onPress={item.livestock_id ? () => openAnimal(item) : undefined}
+              onResolve={() => confirmResolve(item)}
+            />
           </View>
         )}
-        renderItem={({ item }) => (
-          <AlertCard alert={item} onPress={() => onPressAlert(item)} />
-        )}
         ListEmptyComponent={
-          <Text style={styles.empty}>No alerts right now — herd looks calm.</Text>
+          <View style={screenContent}>
+            <EmptyState title="No alerts right now" message="The herd looks calm. New alerts appear here as they happen." />
+          </View>
         }
       />
-    </View>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: Colors.background },
-  stats: { flexDirection: 'row', gap: 10, marginTop: Spacing.xl },
-  list: { padding: Spacing.lg, paddingBottom: 40 },
   sectionHead: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: Spacing.md,
-    marginTop: Spacing.sm,
+    gap: Spacing.sm,
+    paddingBottom: Spacing.md,
   },
-  bar: {
-    width: 4,
-    height: 18,
-    borderRadius: 2,
-    marginRight: 8,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: Colors.text,
-    flex: 1,
-  },
-  countPill: {
-    minWidth: 24,
-    height: 24,
-    borderRadius: Radius.pill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 8,
-  },
-  countText: { color: '#fff', fontWeight: '700', fontSize: 12 },
-  empty: {
-    textAlign: 'center',
-    color: Colors.textMuted,
-    marginTop: 40,
-  },
+  sectionTitle: { flex: 1, fontSize: 18, lineHeight: 24 },
+  item: { paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md },
 });

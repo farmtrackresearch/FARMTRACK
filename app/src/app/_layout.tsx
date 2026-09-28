@@ -8,11 +8,14 @@ import {
 import { Stack, useRouter, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 
+import { AlarmOverlay } from '@/components/alerts/AlarmOverlay';
+import { BrandMark } from '@/components/ui/Illustrations';
 import { Colors } from '@/constants/theme';
 import { AlarmProvider } from '@/hooks/useAlarm';
+import { usePushRegistration } from '@/hooks/usePushRegistration';
 import { FarmDataProvider } from '@/stores/FarmDataContext';
 import { useAuthStore } from '@/stores/authStore';
 
@@ -21,7 +24,10 @@ SplashScreen.preventAutoHideAsync();
 function AuthGate({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const segments = useSegments();
-  const { loading, profile, initialize } = useAuthStore();
+  const loading = useAuthStore((s) => s.loading);
+  const profile = useAuthStore((s) => s.profile);
+  const initialize = useAuthStore((s) => s.initialize);
+  usePushRegistration();
 
   useEffect(() => {
     void initialize().finally(() => {
@@ -44,8 +50,9 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 
   if (loading) {
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.primaryDark }}>
-        <ActivityIndicator color="#fff" size="large" />
+      <View style={styles.loading} accessibilityLabel="Loading FarmTrack">
+        <BrandMark size={96} />
+        <ActivityIndicator color={Colors.textInverse} size="large" />
       </View>
     );
   }
@@ -72,14 +79,29 @@ export default function RootLayout() {
     <AlarmProvider>
       <FarmDataProvider>
         <StatusBar style="light" />
-        <AuthGate>
-          <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: Colors.background } }}>
-            <Stack.Screen name="(auth)" />
-            <Stack.Screen name="(tabs)" />
-            <Stack.Screen name="livestock" options={{ presentation: 'card' }} />
-          </Stack>
-        </AuthGate>
+        <View style={styles.fill}>
+          <AuthGate>
+            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: Colors.background } }}>
+              <Stack.Screen name="(auth)" />
+              <Stack.Screen name="(tabs)" />
+              <Stack.Screen name="livestock" options={{ presentation: 'card' }} />
+            </Stack>
+            {/* Root level so a breach alarm shows on every screen, not only the tabs. */}
+            <AlarmOverlay />
+          </AuthGate>
+        </View>
       </FarmDataProvider>
     </AlarmProvider>
   );
 }
+
+const styles = StyleSheet.create({
+  fill: { flex: 1, backgroundColor: Colors.background },
+  loading: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 32,
+    backgroundColor: Colors.primaryDark,
+  },
+});

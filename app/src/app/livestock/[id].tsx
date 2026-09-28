@@ -1,224 +1,175 @@
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useMemo } from 'react';
+import { StyleSheet, View } from 'react-native';
 
+import { AlertCard } from '@/components/alerts/AlertCard';
+import { AppHeader } from '@/components/ui/AppHeader';
+import { StatusPill } from '@/components/ui/Badge';
 import { Card } from '@/components/ui/Card';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { IconButton } from '@/components/ui/IconButton';
+import { KeyValueRow } from '@/components/ui/ListRow';
 import { ProgressBar } from '@/components/ui/ProgressBar';
+import { Screen } from '@/components/ui/Screen';
+import { SectionHeader } from '@/components/ui/SectionHeader';
+import { StatRow, StatTile } from '@/components/ui/StatTile';
+import { Text } from '@/components/ui/Text';
 import { Colors, Radius, Spacing } from '@/constants/theme';
+import { batteryLabel, batteryTone, isStale, timeAgo, trainingStatsByAnimal } from '@/lib/utils';
 import { useFarm } from '@/stores/FarmDataContext';
 
 export default function LivestockDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const insets = useSafeAreaInsets();
-  const { livestock } = useFarm();
+  const { livestock, locations, alerts, isAdmin, now } = useFarm();
 
   const animal = livestock.find((l) => l.id === id);
   const collar = animal?.collar;
+  const location = locations.find((l) => l.livestock_id === id);
+  const animalAlerts = useMemo(() => alerts.filter((a) => a.livestock_id === id), [alerts, id]);
+  const training = useMemo(
+    () => trainingStatsByAnimal(animalAlerts, now)[id ?? ''] ?? { warnings: 0, escalated: 0, successRate: null },
+    [animalAlerts, id, now]
+  );
 
   if (!animal) {
     return (
-      <View style={styles.missing}>
-        <Stack.Screen options={{ title: 'Not found' }} />
-        <Text>Animal not found.</Text>
-      </View>
+      <Screen header={<AppHeader variant="stack" inScroll onBack={() => router.back()} title="Not found" />}>
+        <EmptyState title="Animal not found." message="It may have been deleted on another phone." />
+      </Screen>
     );
   }
 
+  const stale = isStale(location?.last_seen_at, now);
+  const successLabel = training.successRate == null ? '—' : `${training.successRate}%`;
+  const lowBattery = batteryTone(collar?.battery_level) === 'critical';
+
   return (
-    <View style={styles.root}>
-      <Stack.Screen options={{ headerShown: false }} />
-      <LinearGradient
-        colors={[Colors.primaryDark, Colors.headerMid]}
-        style={[styles.hero, { paddingTop: insets.top + 8 }]}>
-        <Pressable style={styles.back} onPress={() => router.back()}>
-          <Ionicons name="arrow-back" size={20} color="#fff" />
-          <Text style={styles.backText}>Back</Text>
-        </Pressable>
-
-        <View style={styles.identity}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.name}>{animal.name}</Text>
-            <Text style={styles.collarId}>
-              Collar {collar?.device_hardware_id ?? 'Unpaired'}
-            </Text>
+    <Screen
+      header={
+        <AppHeader
+          variant="stack"
+          inScroll
+          onBack={() => router.back()}
+          overline={`Tag ${animal.tag_id}`}
+          title={animal.name}
+          titleVariant="display"
+          subtitle={`Collar ${collar?.device_hardware_id ?? 'not paired'}`}
+          right={
+            isAdmin ? (
+              <IconButton
+                icon="pencil-outline"
+                variant="onDark"
+                onPress={() => router.push({ pathname: '/livestock/create', params: { id: animal.id } })}
+                accessibilityLabel={`Edit ${animal.name}`}
+              />
+            ) : null
+          }>
+          <View style={styles.pillRow}>
+            <StatusPill status={animal.animal_status} stale={stale} />
           </View>
-          <View style={styles.statusPill}>
-            <Text style={styles.statusText}>
-              {animal.animal_status.replace('_', ' ')}
+          <StatRow>
+            <StatTile
+              icon={lowBattery ? 'battery-alert-variant-outline' : 'battery-medium'}
+              label="Battery"
+              value={batteryLabel(collar?.battery_level)}
+              attention={lowBattery}
+            />
+            <StatTile
+              icon={stale ? 'clock-alert-outline' : 'crosshairs-gps'}
+              label={stale ? 'Last fix (stale)' : 'Last fix'}
+              value={location?.last_seen_at ? timeAgo(location.last_seen_at, now) : '—'}
+              attention={stale}
+            />
+            <StatTile icon="school-outline" label="Training" value={successLabel} />
+          </StatRow>
+        </AppHeader>
+      }>
+      <Card>
+        <View style={styles.cardHead}>
+          <View style={styles.iconBox}>
+            <MaterialCommunityIcons name="chart-line" size={22} color={Colors.primary} />
+          </View>
+          <View style={styles.flex}>
+            <Text variant="heading">Training progress</Text>
+            <Text variant="caption" color="secondary">
+              Warnings that turned the animal back, from recent alerts
             </Text>
           </View>
         </View>
-
-        <View style={styles.quickStats}>
-          <QuickStat label="Battery" value={`${collar?.battery_level ?? '—'}%`} />
-          <QuickStat label="Signal" value={collar?.signal_strength ?? '—'} />
-          <QuickStat label="Training" value={`${animal.training_success_rate}%`} />
-        </View>
-      </LinearGradient>
-
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <Card>
-          <View style={styles.cardHead}>
-            <View style={styles.iconBox}>
-              <MaterialCommunityIcons name="chart-line" size={20} color={Colors.primary} />
-            </View>
-            <View>
-              <Text style={styles.cardTitle}>Training Progress</Text>
-              <Text style={styles.cardSub}>Operant conditioning effectiveness</Text>
-            </View>
-          </View>
-
-          <View style={styles.rateRow}>
-            <Text style={styles.rateLabel}>Success Rate</Text>
-            <Text style={styles.rateValue}>{animal.training_success_rate}%</Text>
-          </View>
-          <ProgressBar progress={animal.training_success_rate} height={10} />
-
-          <View style={styles.metrics}>
-            <View style={styles.metric}>
-              <View style={[styles.metricIcon, { backgroundColor: Colors.warningSoft }]}>
-                <MaterialCommunityIcons name="volume-high" size={18} color={Colors.warning} />
-              </View>
-              <Text style={styles.metricLabel}>Audio Warnings</Text>
-              <Text style={styles.metricValue}>{animal.audio_warning_count}</Text>
-            </View>
-            <View style={styles.metric}>
-              <View style={[styles.metricIcon, { backgroundColor: Colors.criticalSoft }]}>
-                <MaterialCommunityIcons name="lightning-bolt" size={18} color={Colors.critical} />
-              </View>
-              <Text style={styles.metricLabel}>Vibration Pulses</Text>
-              <Text style={styles.metricValue}>{animal.vibration_pulse_count}</Text>
-            </View>
-          </View>
-
-          <View style={styles.footerNote}>
-            <MaterialCommunityIcons name="waveform" size={16} color={Colors.textMuted} />
-            <Text style={styles.footerText}>
-              Training sequence: Audio warning → Vibration → Electrical correction when boundary is
-              breached.
-            </Text>
-          </View>
-        </Card>
-
-        <Card style={{ marginTop: Spacing.lg }}>
-          <Text style={styles.cardTitle}>Profile</Text>
-          <InfoRow label="Tag ID" value={animal.tag_id} />
-          <InfoRow label="Breed" value={animal.breed} />
-          <InfoRow label="Age" value={animal.age != null ? `${animal.age} years` : '—'} />
-          <InfoRow label="Health" value={animal.health_status} />
-          <InfoRow label="Connection" value={collar?.connection_type ?? '—'} />
-          <InfoRow label="Firmware" value={collar?.firmware_version ?? '—'} />
-        </Card>
-
-        <Text style={styles.historyTitle}>5-Week Training History</Text>
-        <Card>
-          <Text style={styles.cardSub}>
-            Historical charts can be wired to aggregated `location_logs` and alert counts per week.
+        <View style={styles.rateRow}>
+          <Text variant="bodyStrong" color="secondary">
+            Success rate
           </Text>
-        </Card>
-      </ScrollView>
-    </View>
+          <Text variant="stat" color="primary">
+            {successLabel}
+          </Text>
+        </View>
+        <ProgressBar progress={training.successRate ?? 0} height={10} accessibilityLabel="Training success rate" />
+        <Text variant="caption" color="secondary" style={styles.note}>
+          {training.warnings === 0
+            ? 'No fence warnings yet.'
+            : `${training.warnings - training.escalated} of ${training.warnings} warnings did not lead to a breach.`}
+        </Text>
+        <View style={styles.metrics}>
+          <StatTile variant="surface" icon="volume-high" label="Audio warnings" value={animal.audio_warning_count ?? 0} />
+          <StatTile variant="surface" icon="vibrate-off" label="Vibration motor" value="Not fitted" />
+        </View>
+        <View style={styles.footerNote}>
+          <MaterialCommunityIcons name="waveform" size={16} color={Colors.textSecondary} />
+          <Text variant="caption" color="secondary" style={styles.flex}>
+            The collar beeps when the animal nears the fence and beeps urgently once it is outside. There is no
+            vibration or electric correction.
+          </Text>
+        </View>
+      </Card>
+
+      <Card>
+        <Text variant="heading" style={styles.profileTitle}>
+          Profile
+        </Text>
+        <KeyValueRow label="Tag ID" value={animal.tag_id} />
+        <KeyValueRow label="Breed" value={animal.breed} />
+        <KeyValueRow label="Age" value={animal.age != null ? `${animal.age} years` : '—'} />
+        <KeyValueRow label="Health" value={capitalize(animal.health_status)} />
+        <KeyValueRow label="Connection" value={collar?.connection_type ?? '—'} />
+        <KeyValueRow label="Firmware" value={collar?.firmware_version ?? '—'} />
+        <KeyValueRow label="GPS satellites" value={location?.sats != null ? String(location.sats) : '—'} last />
+      </Card>
+
+      <View style={styles.section}>
+        <SectionHeader title="Recent alerts" icon="bell-outline" count={animalAlerts.length} />
+        {animalAlerts.length === 0 ? (
+          <EmptyState scene={false} icon="bell-check-outline" title="No alerts for this animal in the recent history." />
+        ) : (
+          animalAlerts.slice(0, 5).map((a) => <AlertCard key={a.id} alert={a} />)
+        )}
+      </View>
+    </Screen>
   );
 }
 
-function QuickStat({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.qStat}>
-      <Text style={styles.qLabel}>{label}</Text>
-      <Text style={styles.qValue}>{value}</Text>
-    </View>
-  );
-}
-
-function InfoRow({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.infoRow}>
-      <Text style={styles.infoLabel}>{label}</Text>
-      <Text style={styles.infoValue}>{value}</Text>
-    </View>
-  );
+function capitalize(s: string) {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: Colors.background },
-  missing: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  hero: { paddingHorizontal: Spacing.lg, paddingBottom: Spacing.xl },
-  back: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 16 },
-  backText: { color: '#fff', fontWeight: '600' },
-  identity: { flexDirection: 'row', alignItems: 'flex-start' },
-  name: { color: '#fff', fontSize: 28, fontWeight: '800' },
-  collarId: { color: 'rgba(255,255,255,0.7)', marginTop: 4 },
-  statusPill: {
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.4)',
-    borderRadius: Radius.pill,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  statusText: { color: '#fff', fontWeight: '600', fontSize: 12, textTransform: 'capitalize' },
-  quickStats: { flexDirection: 'row', gap: 10, marginTop: 20 },
-  qStat: {
-    flex: 1,
-    backgroundColor: Colors.glass,
-    borderWidth: 1,
-    borderColor: Colors.glassBorder,
-    borderRadius: Radius.md,
-    padding: Spacing.md,
-    alignItems: 'center',
-  },
-  qLabel: { color: 'rgba(255,255,255,0.65)', fontSize: 11, marginBottom: 4 },
-  qValue: { color: '#fff', fontWeight: '800', fontSize: 18 },
-  content: { padding: Spacing.lg, paddingBottom: 40 },
-  cardHead: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
+  flex: { flex: 1, minWidth: 0 },
+  pillRow: { flexDirection: 'row', marginBottom: Spacing.md },
+  cardHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, marginBottom: Spacing.lg },
   iconBox: {
-    width: 40,
-    height: 40,
+    width: 44,
+    height: 44,
     borderRadius: Radius.sm,
-    backgroundColor: Colors.successSoft,
+    backgroundColor: Colors.primarySoft,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  cardTitle: { fontWeight: '700', fontSize: 16, color: Colors.text },
-  cardSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
-  rateRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
-  rateLabel: { color: Colors.textSecondary, fontWeight: '600' },
-  rateValue: { color: Colors.primary, fontWeight: '800', fontSize: 16 },
-  metrics: { flexDirection: 'row', gap: 10, marginTop: 16 },
-  metric: {
-    flex: 1,
-    backgroundColor: Colors.surfaceMuted,
-    borderRadius: Radius.md,
-    padding: Spacing.md,
-  },
-  metricIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 8,
-  },
-  metricLabel: { fontSize: 12, color: Colors.textMuted },
-  metricValue: { fontSize: 20, fontWeight: '800', color: Colors.text, marginTop: 4 },
-  footerNote: { flexDirection: 'row', gap: 8, marginTop: 16, alignItems: 'flex-start' },
-  footerText: { flex: 1, fontSize: 12, color: Colors.textMuted, lineHeight: 18 },
-  historyTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: Colors.text,
-    marginTop: Spacing.xl,
-    marginBottom: Spacing.md,
-  },
-  infoRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Colors.border,
-  },
-  infoLabel: { color: Colors.textMuted },
-  infoValue: { color: Colors.text, fontWeight: '600', textTransform: 'capitalize' },
+  rateRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.sm },
+  note: { marginTop: Spacing.sm },
+  metrics: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.lg },
+  footerNote: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.lg, alignItems: 'flex-start' },
+  profileTitle: { marginBottom: Spacing.xs },
+  section: { gap: Spacing.md },
 });

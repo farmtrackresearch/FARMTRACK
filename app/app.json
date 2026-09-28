@@ -8,22 +8,17 @@
     "scheme": "farmtrack",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "com.farmtrack.app",
-      "icon": "./assets/expo.icon",
-      "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "FarmTrack uses your location to center the ranch map and navigate to livestock.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "FarmTrack needs background location to monitor geofence crossings and alert you when a fence is breached.",
-        "UIBackgroundModes": [
-          "location",
-          "audio"
-        ]
+      "icon": "./assets/images/icon.png",
+      "config": {
+        "usesNonExemptEncryption": false
       }
     },
     "android": {
       "package": "com.farmtrack.app",
       "adaptiveIcon": {
-        "backgroundColor": "#1B3022",
+        "backgroundColor": "#2F4A24",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
@@ -31,14 +26,14 @@
       "permissions": [
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION",
-        "ACCESS_BACKGROUND_LOCATION",
         "POST_NOTIFICATIONS",
-        "VIBRATE",
-        "WAKE_LOCK",
-        "FOREGROUND_SERVICE",
-        "FOREGROUND_SERVICE_LOCATION",
-        "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION"
+        "VIBRATE"
+      ],
+      "blockedPermissions": [
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE_LOCATION",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.RECORD_AUDIO"
       ],
       "predictiveBackGestureEnabled": false
     },
@@ -51,34 +46,38 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#1B3022",
+          "backgroundColor": "#2F4A24",
           "image": "./assets/images/splash-icon.png",
-          "imageWidth": 76
+          "imageWidth": 160
         }
       ],
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Allow FarmTrack to use your location for ranch map navigation.",
-          "locationAlwaysAndWhenInUsePermission": "Allow FarmTrack to use your location even when the app is in the background so it can warn you when you cross a virtual fence."
+          "locationWhenInUsePermission": "FarmTrack uses your location only while you have \"Check my position\" switched on in the Map tab, to show how far you are from a virtual fence.",
+          "locationAlwaysAndWhenInUsePermission": false,
+          "locationAlwaysPermission": false,
+          "motionUsagePermission": false,
+          "isIosBackgroundLocationEnabled": false,
+          "isAndroidBackgroundLocationEnabled": false,
+          "isAndroidForegroundServiceEnabled": false
         }
       ],
       [
         "expo-notifications",
         {
-          "color": "#1B3022",
-          "sounds": []
+          "icon": "./assets/images/notification-icon.png",
+          "color": "#4F7A3A"
         }
       ],
       "expo-font",
-      "expo-image",
-      "expo-secure-store",
       "expo-status-bar",
-      "expo-web-browser",
       [
         "expo-audio",
         {
-          "enableBackgroundPlayback": true
+          "enableBackgroundPlayback": false,
+          "recordAudioAndroid": false,
+          "microphonePermission": false
         }
       ],
       "expo-asset",

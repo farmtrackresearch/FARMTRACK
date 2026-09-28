@@ -8,6 +8,26 @@ Radio settings (fixed, quote with every range result):
 Collar `FT-EC82C34C` · collar env `collar` · gateway env `gateway` · commit `3a51f8e`
 (firmware is uncommitted — see plan for md5 fingerprints)
 
+> **Any run after the protocol v2 firmware change: the line above is out of
+> date.** The collar ID changed, both boards must run v2 together, and
+> `SEND_INTERVAL` is 3 s again (±10% jitter, so the TTFF seq cross-check is
+> only good to about ±10%). See "Read first" at the top of the plan. Fill this
+> in at the bench, before the session:
+>
+> | Field | Value |
+> |---|---|
+> | New collar ID from boot banner (`FT-XXXXXXXX`) | ____________________ |
+> | `git rev-parse --short HEAD` | ____________________ |
+> | Firmware files listed by `git status --short firmware/src` (none / which) | ____________________ |
+> | md5 `collar.cpp` | ________________________________ |
+> | md5 `gateway.cpp` | ________________________________ |
+> | md5 `packet.h` | ________________________________ |
+> | md5 `pins.h` | ________________________________ |
+> | Gateway reflashed with v2 (env `gateway`) at | ____________ |
+> | Collar reflashed with v2 (env `collar`) at | ____________ |
+> | Both flashed from the same tree? | YES / NO |
+> | Runbook re-key done, collar still paired to its animal? | YES / NO |
+
 ## Header
 
 | Field | Value |

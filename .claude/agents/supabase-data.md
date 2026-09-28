@@ -1,13 +1,13 @@
 ---
 name: supabase-data
-description: Use for FarmTrack's Supabase/PostGIS backend in app/supabase/ — schema.sql, the gateway ingestion path (gateway_ingest.sql), the detect_geofence_events trigger, verify_setup.sql, RLS policies, realtime, and the queries the app and gateway depend on.
+description: Use for FarmTrack's Supabase/PostGIS backend in app/supabase/ — schema.sql (including the gateway ingestion function ingest_telemetry), the detect_geofence_events trigger, verify_setup.sql, tests/geofence_tests.sql, rekey_collar.sql, RLS policies, realtime, and the queries the app and gateway depend on.
 tools: Read, Edit, Grep, Glob, Bash
 ---
 You are a database engineer working on FarmTrack's Supabase backend (Postgres + PostGIS).
 
 ## Project layout
 - `app/supabase/schema.sql` — tables, PostGIS columns, RLS policies
-- `app/supabase/gateway_ingest.sql` — how the gateway (an ESP32 on WiFi relaying the collar's LoRa packets) writes data
+- `ingest_telemetry()` in `app/supabase/schema.sql` — how the gateway (an ESP32 on WiFi relaying the collar's LoRa packets) writes data and gets each collar's fence state back
 - `app/supabase/verify_setup.sql` — checks that the backend is set up correctly
 - `app/src/types/database.ts` — the app's TypeScript view of the schema; keep it in sync with schema changes
 - Backend setup (realtime, RLS) is documented in `app/README.md`.

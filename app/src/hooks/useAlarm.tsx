@@ -1,40 +1,63 @@
-import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { Platform, Vibration } from 'react-native';
-import * as Notifications from 'expo-notifications';
 import { AudioPlayer, createAudioPlayer, setAudioModeAsync } from 'expo-audio';
+import * as Notifications from 'expo-notifications';
+import {
+  createContext,
+  ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { Platform, Vibration } from 'react-native';
+
+import { ALARM_CHANNEL_ID, hasRegisteredPushToken } from '@/lib/pushNotifications';
 
 export type AlarmSeverity = 'warning' | 'breach';
 
 export type ActiveAlarm = {
   id: string;
+  /** Who the alarm is for, usually a livestock id. One alarm per source. */
+  sourceId: string;
   severity: AlarmSeverity;
   title: string;
   message: string;
   fenceName: string | null;
   startedAt: number;
-  /** Identifies who this alarm is for (a livestock id, or 'phone' for the on-map GPS probe) — lets a caller check "is my breach still the active alarm?" before dismissing someone else's. */
-  sourceId: string | null;
+  /** After this the sound and vibration stop; the overlay and notification stay. */
+  soundUntil: number;
+  silenced: boolean;
 };
 
-const ALARM_MAX_DURATION_MS = 5 * 60 * 1000;
+type TriggerOptions = {
+  sourceId: string;
+  severity: AlarmSeverity;
+  title: string;
+  message: string;
+  fenceName?: string | null;
+};
 
 type AlarmContextValue = {
+  /** All active alarms, most urgent first. */
+  alarms: ActiveAlarm[];
+  /** The alarm the overlay shows (most urgent, newest). */
   activeAlarm: ActiveAlarm | null;
-  triggerAlarm: (opts: {
-    severity: AlarmSeverity;
-    title: string;
-    message: string;
-    fenceName?: string | null;
-    sourceId?: string | null;
-  }) => Promise<string | undefined>;
-  dismissAlarm: () => Promise<void>;
-  notificationsReady: boolean;
+  /** Starts (or updates the text of) the alarm for `sourceId`. Re-triggering never restarts the sound. */
+  triggerAlarm: (opts: TriggerOptions) => string;
+  /** Stops one source's alarm (user acknowledged it, or the server says it is over). */
+  dismissAlarm: (sourceId: string) => void;
+  /** Stops everything, e.g. on sign-out. */
+  dismissAllAlarms: () => void;
 };
 
 const AlarmContext = createContext<AlarmContextValue | null>(null);
 
-const BREACH_PATTERN = [0, 500, 200, 500, 200, 500, 200, 800] as const;
-const WARNING_PATTERN = [0, 300, 150, 300] as const;
+const ALARM_SOUND_MAX_MS = 5 * 60 * 1000;
+
+const BREACH_PATTERN = [0, 500, 200, 500, 200, 500, 200, 800];
+const WARNING_PATTERN = [0, 300, 150, 300];
+const REPEAT_MS: Record<AlarmSeverity, number> = { breach: 2500, warning: 4000 };
 
 const SAMPLE_RATE = 22050;
 
@@ -82,248 +105,183 @@ function generateToneWav(frequency: number, durationMs: number, volume = 0.85): 
 const WARNING_BEEP_WAV = generateToneWav(1400, 180, 0.8);
 const BREACH_BEEP_WAV = generateToneWav(2000, 200, 0.9);
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    priority: Notifications.AndroidNotificationPriority.MAX,
-  }),
-});
+const notificationId = (sourceId: string) => `alarm-${sourceId}`;
+
+function sortAlarms(list: ActiveAlarm[]): ActiveAlarm[] {
+  return [...list].sort((a, b) => {
+    if (a.severity !== b.severity) return a.severity === 'breach' ? -1 : 1;
+    return b.startedAt - a.startedAt;
+  });
+}
+
+async function postAlarmNotification(alarm: ActiveAlarm) {
+  // With a registered push token the server delivers this alert itself (and
+  // does so even when the app is closed); a local copy would just duplicate it.
+  if (Platform.OS === 'web' || hasRegisteredPushToken()) return;
+  try {
+    await Notifications.scheduleNotificationAsync({
+      identifier: notificationId(alarm.sourceId),
+      content: { title: alarm.title, body: alarm.message, sound: true },
+      trigger: Platform.OS === 'android' ? { channelId: ALARM_CHANNEL_ID } : null,
+    });
+  } catch (err) {
+    console.warn('[AlarmProvider] local notification failed:', err);
+  }
+}
+
+function clearAlarmNotification(sourceId: string) {
+  if (Platform.OS === 'web') return;
+  Notifications.dismissNotificationAsync(notificationId(sourceId)).catch(() => {});
+}
 
 export function AlarmProvider({ children }: { children: ReactNode }) {
-  const [activeAlarm, setActiveAlarm] = useState<ActiveAlarm | null>(null);
-  const [notificationsReady, setNotificationsReady] = useState(false);
-  const vibrationTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const notifTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const audioTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const maxDurationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const soundInstancesRef = useRef<Map<string, AudioPlayer>>(new Map());
-  const audioReadyRef = useRef(false);
+  const [alarms, setAlarms] = useState<ActiveAlarm[]>([]);
+  const alarmsRef = useRef<ActiveAlarm[]>([]);
+  const playersRef = useRef<Map<AlarmSeverity, AudioPlayer>>(new Map());
 
   useEffect(() => {
-    (async () => {
-      try {
-        await setAudioModeAsync({
-          allowsRecording: false,
-          playsInSilentMode: true,
-          shouldPlayInBackground: true,
-          interruptionMode: 'doNotMix',
-        });
+    alarmsRef.current = alarms;
+  }, [alarms]);
 
-        try {
-          const ws = createAudioPlayer({ uri: WARNING_BEEP_WAV });
-          ws.volume = 1.0;
-          soundInstancesRef.current.set('warning', ws);
-          const bs = createAudioPlayer({ uri: BREACH_BEEP_WAV });
-          bs.volume = 1.0;
-          soundInstancesRef.current.set('breach', bs);
-          audioReadyRef.current = true;
-        } catch (audioErr) {
-          console.warn('[AlarmProvider] audio preload failed:', audioErr);
-        }
+  // Audio setup only — notification permission is asked after login
+  // (hooks/usePushRegistration.ts), not at launch.
+  useEffect(() => {
+    const players = playersRef.current;
+    setAudioModeAsync({
+      allowsRecording: false,
+      playsInSilentMode: true,
+      // Foreground siren only. When the app is closed the server's push
+      // notification (channel `alarms`) is what reaches the farmer.
+      shouldPlayInBackground: false,
+      interruptionMode: 'doNotMix',
+    }).catch((err) => console.warn('[AlarmProvider] audio mode failed:', err));
 
-        const existingPerms = await Notifications.getPermissionsAsync();
-        const iosStatus = existingPerms.ios?.status;
-        const androidStatus = (existingPerms as any).status;
-        let granted =
-          iosStatus === 2 || androidStatus === 'granted' || androidStatus === 3;
-        if (!granted) {
-          const perms = await Notifications.requestPermissionsAsync({
-            ios: {
-              allowAlert: true,
-              allowBadge: true,
-              allowSound: true,
-              allowCriticalAlerts: true,
-            },
-          });
-          const iosAfter = perms.ios?.status;
-          const androidAfter = (perms as any).status;
-          granted =
-            iosAfter === 2 ||
-            androidAfter === 'granted' ||
-            androidAfter === 3;
-        }
-        setNotificationsReady(granted);
-      } catch (err) {
-        console.warn('[AlarmProvider] setup failed:', err);
-        setNotificationsReady(true);
-      }
-    })();
+    try {
+      const warning = createAudioPlayer({ uri: WARNING_BEEP_WAV });
+      warning.volume = 1.0;
+      players.set('warning', warning);
+      const breach = createAudioPlayer({ uri: BREACH_BEEP_WAV });
+      breach.volume = 1.0;
+      players.set('breach', breach);
+    } catch (err) {
+      console.warn('[AlarmProvider] audio preload failed:', err);
+    }
 
     return () => {
-      stopAllTimers();
-      void stopAllSounds();
-      for (const snd of soundInstancesRef.current.values()) {
+      for (const player of players.values()) {
         try {
-          snd.remove();
+          player.remove();
         } catch {}
       }
-      soundInstancesRef.current.clear();
-      audioReadyRef.current = false;
+      players.clear();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const stopAllSounds = useCallback(async () => {
-    for (const snd of soundInstancesRef.current.values()) {
+  const playBurst = useCallback(async (severity: AlarmSeverity) => {
+    Vibration.vibrate(severity === 'breach' ? BREACH_PATTERN : WARNING_PATTERN);
+    const player = playersRef.current.get(severity);
+    if (!player) return;
+    const count = severity === 'breach' ? 3 : 1;
+    for (let i = 0; i < count; i++) {
       try {
-        snd.pause();
-        await snd.seekTo(0);
-      } catch {}
-    }
-  }, []);
-
-  const playSingleBeep = useCallback(async (severity: AlarmSeverity) => {
-    if (!audioReadyRef.current) return;
-    const snd = soundInstancesRef.current.get(severity);
-    if (!snd) return;
-    try {
-      await snd.seekTo(0);
-      snd.play();
-    } catch (err) {
-      console.warn('[AlarmProvider] beep play failed:', err);
-    }
-  }, []);
-
-  const playBeepBurst = useCallback(
-    async (severity: AlarmSeverity) => {
-      const count = severity === 'breach' ? 3 : 1;
-      const gapMs = severity === 'breach' ? 110 : 0;
-      for (let i = 0; i < count; i++) {
-        void playSingleBeep(severity);
-        if (i < count - 1) {
-          await new Promise((r) => setTimeout(r, gapMs));
-        }
-      }
-    },
-    [playSingleBeep]
-  );
-
-  const stopAllTimers = useCallback(() => {
-    if (vibrationTimerRef.current) {
-      clearInterval(vibrationTimerRef.current);
-      vibrationTimerRef.current = null;
-    }
-    if (notifTimerRef.current) {
-      clearInterval(notifTimerRef.current);
-      notifTimerRef.current = null;
-    }
-    if (audioTimerRef.current) {
-      clearInterval(audioTimerRef.current);
-      audioTimerRef.current = null;
-    }
-    if (maxDurationTimerRef.current) {
-      clearTimeout(maxDurationTimerRef.current);
-      maxDurationTimerRef.current = null;
-    }
-  }, []);
-
-  const dismissAlarm = useCallback(async () => {
-    stopAllTimers();
-    try {
-      await Notifications.dismissAllNotificationsAsync();
-    } catch {}
-    void stopAllSounds();
-    setActiveAlarm(null);
-  }, [stopAllTimers, stopAllSounds]);
-
-  const playToneBurst = useCallback((severity: AlarmSeverity) => {
-    const pattern = severity === 'breach' ? [...BREACH_PATTERN] : [...WARNING_PATTERN];
-    Vibration.vibrate(pattern);
-  }, []);
-
-  const pushLocalNotification = useCallback(
-    async (alarm: ActiveAlarm) => {
-      try {
-        await Notifications.scheduleNotificationAsync({
-          content: {
-            title: alarm.title,
-            body: alarm.message,
-            sound: true,
-            priority: Notifications.AndroidNotificationPriority.MAX,
-          },
-          trigger: null,
-        });
+        await player.seekTo(0);
+        player.play();
       } catch (err) {
-        console.warn('[AlarmProvider] scheduleNotification failed:', err);
+        console.warn('[AlarmProvider] beep failed:', err);
+        return;
       }
-    },
-    []
-  );
+      if (i < count - 1) await new Promise((r) => setTimeout(r, 310));
+    }
+  }, []);
 
-  const triggerAlarm = useCallback(
-    async (opts: {
-      severity: AlarmSeverity;
-      title: string;
-      message: string;
-      fenceName?: string | null;
-      sourceId?: string | null;
-    }) => {
-      const { severity, title, message, fenceName = null, sourceId = null } = opts;
-      const id = `alarm-${severity}-${Date.now()}`;
-      const alarm: ActiveAlarm = {
-        id,
-        severity,
-        title,
-        message,
-        fenceName,
-        startedAt: Date.now(),
-        sourceId,
+  // One sound loop for all alarms, at the most urgent severity still sounding.
+  const soundingSeverity: AlarmSeverity | null = alarms.some((a) => !a.silenced && a.severity === 'breach')
+    ? 'breach'
+    : alarms.some((a) => !a.silenced)
+      ? 'warning'
+      : null;
+
+  useEffect(() => {
+    if (!soundingSeverity) return;
+    const tick = () => {
+      const now = Date.now();
+      if (alarmsRef.current.some((a) => !a.silenced && a.soundUntil <= now)) {
+        setAlarms((prev) => prev.map((a) => (!a.silenced && a.soundUntil <= now ? { ...a, silenced: true } : a)));
+      }
+      void playBurst(soundingSeverity);
+    };
+    tick();
+    const id = setInterval(tick, REPEAT_MS[soundingSeverity]);
+    const players = playersRef.current;
+    return () => {
+      clearInterval(id);
+      Vibration.cancel();
+      for (const player of players.values()) {
+        try {
+          player.pause();
+        } catch {}
+      }
+    };
+  }, [soundingSeverity, playBurst]);
+
+  const triggerAlarm = useCallback((opts: TriggerOptions) => {
+    const existing = alarmsRef.current.find((a) => a.sourceId === opts.sourceId);
+    const now = Date.now();
+    if (existing) {
+      const escalated = existing.severity === 'warning' && opts.severity === 'breach';
+      const updated: ActiveAlarm = {
+        ...existing,
+        severity: escalated ? 'breach' : existing.severity,
+        title: opts.title,
+        message: opts.message,
+        fenceName: opts.fenceName ?? existing.fenceName,
+        ...(escalated ? { startedAt: now, soundUntil: now + ALARM_SOUND_MAX_MS, silenced: false } : {}),
       };
+      alarmsRef.current = sortAlarms(alarmsRef.current.map((a) => (a.id === existing.id ? updated : a)));
+      setAlarms(alarmsRef.current);
+      return existing.id;
+    }
 
-      setActiveAlarm((prev) => {
-        if (prev && prev.severity === 'breach' && severity === 'warning') {
-          return prev;
-        }
-        return alarm;
-      });
+    const alarm: ActiveAlarm = {
+      id: `alarm-${opts.sourceId}-${now}`,
+      sourceId: opts.sourceId,
+      severity: opts.severity,
+      title: opts.title,
+      message: opts.message,
+      fenceName: opts.fenceName ?? null,
+      startedAt: now,
+      soundUntil: now + ALARM_SOUND_MAX_MS,
+      silenced: false,
+    };
+    alarmsRef.current = sortAlarms([...alarmsRef.current, alarm]);
+    setAlarms(alarmsRef.current);
+    void postAlarmNotification(alarm);
+    return alarm.id;
+  }, []);
 
-      stopAllTimers();
+  const dismissAlarm = useCallback((sourceId: string) => {
+    if (!alarmsRef.current.some((a) => a.sourceId === sourceId)) return;
+    alarmsRef.current = alarmsRef.current.filter((a) => a.sourceId !== sourceId);
+    setAlarms(alarmsRef.current);
+    clearAlarmNotification(sourceId);
+  }, []);
 
-      playToneBurst(severity);
-      void playBeepBurst(severity);
+  const dismissAllAlarms = useCallback(() => {
+    for (const a of alarmsRef.current) clearAlarmNotification(a.sourceId);
+    alarmsRef.current = [];
+    setAlarms([]);
+  }, []);
 
-      const vibrateInterval = severity === 'breach' ? 2500 : 4000;
-      const notifInterval = severity === 'breach' ? 10000 : 20000;
-      const audioInterval = severity === 'breach' ? 2500 : 4000;
-
-      vibrationTimerRef.current = setInterval(
-        () => playToneBurst(severity),
-        vibrateInterval
-      );
-
-      notifTimerRef.current = setInterval(
-        () => pushLocalNotification(alarm),
-        notifInterval
-      );
-
-      audioTimerRef.current = setInterval(
-        () => playBeepBurst(severity),
-        audioInterval
-      );
-
-      // Alerts continuously for at most 5 minutes even if the animal never
-      // returns inside the boundary — dismissAlarm() stops it sooner on re-entry.
-      maxDurationTimerRef.current = setTimeout(() => {
-        void dismissAlarm();
-      }, ALARM_MAX_DURATION_MS);
-
-      await pushLocalNotification(alarm);
-
-      return id;
-    },
-    [stopAllTimers, playToneBurst, playBeepBurst, pushLocalNotification, dismissAlarm]
+  const value = useMemo<AlarmContextValue>(
+    () => ({
+      alarms,
+      activeAlarm: alarms[0] ?? null,
+      triggerAlarm,
+      dismissAlarm,
+      dismissAllAlarms,
+    }),
+    [alarms, triggerAlarm, dismissAlarm, dismissAllAlarms]
   );
-
-  const value: AlarmContextValue = {
-    activeAlarm,
-    triggerAlarm,
-    dismissAlarm,
-    notificationsReady,
-  };
 
   return <AlarmContext.Provider value={value}>{children}</AlarmContext.Provider>;
 }

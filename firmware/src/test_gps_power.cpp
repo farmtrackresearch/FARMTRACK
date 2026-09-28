@@ -51,7 +51,7 @@ static uint32_t burstCount = 0;
 
 void setup() {
   Serial.begin(115200);
-  pinMode(PIN_LED, OUTPUT);
+  pinMode(PIN_LED, INPUT);   // never an output - DIO0 may be on this pin (pins.h)
   delay(1000);
   Serial.println("\n=== FarmTrack TEST 2c - GPS UNDER REDUCED LOAD ===");
 
@@ -100,6 +100,6 @@ void loop() {
     Serial.println();
 
     len = 0;
-    digitalWrite(PIN_LED, (++burstCount) & 1);
+    burstCount++;
   }
 }

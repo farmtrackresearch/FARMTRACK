@@ -5,6 +5,75 @@ Buildings on one side, highway on the other.
 **Window:** ~00:30 local, one operator, about one hour.
 **Run folder:** `docs/field-tests/runs/2026-09-24-night-collar/`
 
+> ## Read first: firmware and database changed after this run (protocol v2)
+>
+> This plan describes the 2026-09-24 run exactly as it was done, on the
+> protocol v1 build fingerprinted under "Build under test". Since then the
+> collar, gateway and database have moved to **contract v2**. Before the next
+> run:
+>
+> 1. **Record the new firmware build before flashing.** From the repo root run
+>    `git rev-parse --short HEAD`, `git status --short firmware/src` and
+>    `md5 firmware/src/collar.cpp firmware/src/gateway.cpp firmware/src/packet.h firmware/src/pins.h`,
+>    and copy all of it into the run's `notes.md`. If `git status` lists any
+>    of those four files, the commit hash does not identify the build and the
+>    md5 values are the only valid identifier, as on 2026-09-24. Use a new run
+>    folder; do not add v2 results to the 2026-09-24 folder.
+> 2. **Reflash both boards, from the same tree, in one sitting.** Protocol v2
+>    (`PROTO_VERSION 2`) changes the downlink from 6 to 8 bytes, and each
+>    gateway drops uplinks whose version isn't its own. A v2 collar with a v1
+>    gateway produces **no `RX from` lines at all**, which looks exactly like a
+>    dead link. A v1 collar with the v2 gateway also produces no `RX from`
+>    lines, only `ignored packet len=21 ver=1 ...` at most every 30 s.
+>    `analyze_gateway_log.py` flags this. No mixed pair will work.
+>    From `firmware/`:
+>    - gateway board: `pio run -e gateway -t upload`;
+>    - collar board: `pio run -e collar -t upload`.
+>
+>    Plug in only the board being flashed, or pass `--upload-port` with its
+>    port. With both boards connected, PlatformIO may pick the wrong one. No
+>    test environment is needed, and nothing needs to be flashed back
+>    afterwards.
+> 3. **The collar ID has changed.** v2 derives it from `ESP.getEfuseMac() >> 16`,
+>    so `FT-EC82C34C` no longer identifies this collar. Read the new
+>    `FT-XXXXXXXX` from the collar's boot banner at the bench, right after
+>    flashing. The collar must be on USB serial for this, so do it well before
+>    the session: the "never tether the collar" rule still applies during the run.
+>    Then:
+>    - use it for `--device` in the Analysis command;
+>    - use it in place of `FT-XXXXXXXX` in `queries.sql`;
+>    - write it on the data sheet;
+>    - check that the deployment runbook's re-key step has been done, so the
+>      collar stays paired to its animal.
+> 4. **`SEND_INTERVAL` is 3 s again.** After this run the working-tree
+>    `collar.cpp` was set to a 30 s diagnostic interval; v2 returns it to
+>    3000 ms with ±10% random jitter. So the TTFF cross-check
+>    `(seq_fix − seq_t0) × 3 s` is only accurate to about ±10%. The laptop
+>    timestamps stay the primary TTFF measurement.
+> 5. **Other v2 changes that affect this procedure** (per contract v2; confirm
+>    them in the flashed code before relying on them):
+>    - **Buzzer without a fix.** The server now returns SAFE when a reading has
+>      no fix. With the v1 build, all 968 replies in the 2026-09-24 log were
+>      BREACH while every uplink had `fix=0`. The collar should now stay
+>      silent until a fix puts it outside a fence.
+>    - **Timestamps (hard rule 4 changes).** `location_logs.timestamp` becomes
+>      the GPS fix time whenever the collar sends a valid GPS time. The new
+>      column `received_at` is the server receipt time. For rows stored before
+>      the migration, both are upload times.
+>    - **Satellites.** The `sats` field is satellites *used in the fix* (GGA),
+>      not satellites in view.
+>    - **Battery.** v2 sends 255 ("unknown") until a voltage divider is
+>      fitted, so the battery field is still not a measurement.
+>    - **New gateway log output.**
+>      - RX lines now end in `gps_ok=` and `gps_rst=`.
+>      - New lines: `upload ok n= ms= heap= maxblk=`, `reply late`,
+>        `queue full` and `reset reason:`.
+>      - `analyze_gateway_log.py` reports all of these, and it now handles
+>        collar reboots, seq wrap and windows that cross midnight.
+>    - **Gateway resets.** Keep pressing EN at each phase as in hard rule 2
+>      until a run shows `maxblk` holding flat, which would mean the heap
+>      fragmentation is fixed. Nothing has measured that yet.
+
 ## Objective
 
 Three measurements, in this order, in one session without ever power-cycling

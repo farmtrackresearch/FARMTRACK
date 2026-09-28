@@ -4,9 +4,11 @@
 coverage.** Each animal wears a collar that reads its GPS position and sends it
 over long-range LoRa radio to a gateway. The gateway uploads it to Supabase over
 WiFi. A mobile app shows the animals on a live map, lets you draw virtual fences,
-and raises an alert when an animal gets close to a fence, crosses it, stops
-moving, or its collar battery runs low. The collar also beeps when it is near or
-past a fence.
+and raises an alert when an animal gets close to a fence, crosses it, or stops
+moving for an hour — and, once a battery sensor is fitted, when its collar
+battery runs low. The collar also beeps when it is near or past a fence, but only
+while it has a fresh GPS fix: with no fix, or no answer from the server, it goes
+quiet rather than repeat an old verdict.
 
 This is a research / educational project. Contact: `farmtrack.research@gmail.com`.
 
@@ -101,15 +103,26 @@ The team shares **one** Supabase project. Ask the project owner for:
 > git-ignored. This repository is **public**, so anything committed can be seen
 > by anyone.
 
-### Step 4 — Check the database
+### Step 4 — Set up and check the database
 
-Open the Supabase dashboard → **SQL Editor**, paste in all of
-[app/supabase/verify_setup.sql](app/supabase/verify_setup.sql), and run it. It
-only reads, it changes nothing. Every row should say `OK` (rows marked `INFO`
-are just for reading). Anything else tells you what is missing.
+Open the Supabase dashboard → **SQL Editor** and run these files, one at a time,
+in this order:
 
-Full details, including how to register a gateway and a collar, are in
-[app/README.md → Database](app/README.md#6-database).
+1. [app/supabase/00_enum_values.sql](app/supabase/00_enum_values.sql)
+2. [app/supabase/schema.sql](app/supabase/schema.sql) — the whole database in one
+   transaction; if anything fails, nothing is changed.
+3. [app/supabase/verify_setup.sql](app/supabase/verify_setup.sql) — reads only.
+   Every row should say `OK` (rows marked `INFO` are just for reading). On a
+   brand-new project the gateway, fence and paired-collar rows say `NONE` until
+   you have registered a gateway, drawn a fence and paired a collar.
+4. [app/supabase/tests/geofence_tests.sql](app/supabase/tests/geofence_tests.sql)
+   — should end with `ALL TESTS PASSED`. It undoes its own test data.
+
+Then, in **Authentication → Sign In / Providers**, turn off **Allow new users to
+sign up** — team members are added from the dashboard.
+
+Full details — registering a gateway, re-keying a collar, push notifications and
+data retention — are in [app/supabase/README.md](app/supabase/README.md).
 
 ### Step 5 — Run the app
 
@@ -120,9 +133,10 @@ cp .env.example .env       # then open .env and paste the URL and anon key
 npx expo start
 ```
 
-Log in with your **email and password**. The small "Admin" / "Staff" links on
-the login screen open **demo mode**, which shows fake, empty data and never
-talks to Supabase.
+Log in with your **email and password**. If the app has no Supabase keys it runs
+in **demo mode**: the login screen shows "Continue as Admin / Staff (demo)"
+buttons, a "Demo mode – not connected" notice sits at the top of every screen,
+and the farm is empty. Demo mode never talks to Supabase.
 
 For the full phone setup (development build, EAS), follow
 [app/README.md](app/README.md#3-getting-started).
@@ -136,8 +150,13 @@ output looks like are in [firmware/README.md](firmware/README.md#4-wiring).
 ### Step 7 — Flash the collar and the gateway
 
 1. Copy `firmware/src/secrets.h.example` to `firmware/src/secrets.h` and fill it in.
-2. Flash `gateway` on one board and `collar` on the other.
-3. Register the collar ID it prints in Supabase and pair it with an animal.
+2. Flash `gateway` on one board and `collar` on the other. **Both boards must run
+   the same firmware version** (radio protocol v2) or they ignore each other.
+3. The collar prints its ID at boot. A new collar registers itself the first time
+   the gateway hears it and appears in the app's **Hardware** tab under
+   unassigned collars — tap **Pair**. If this collar already had an older ID in
+   Supabase, run [app/supabase/rekey_collar.sql](app/supabase/rekey_collar.sql)
+   instead so its history is kept.
 
 Exact steps: [firmware/README.md → Collar and gateway](firmware/README.md#7-collar-and-gateway-the-real-system).
 
@@ -146,14 +165,84 @@ Exact steps: [firmware/README.md → Collar and gateway](firmware/README.md#7-co
 1. Take the collar outside with a clear view of the sky and wait for `fix=1` in
    its serial monitor (1–3 minutes).
 2. The gateway's monitor shows each packet it receives and uploads.
-3. Run `verify_setup.sql` again. Row 13 should say `OK - data is flowing`.
+3. Run `verify_setup.sql` again. The "telemetry arriving" row should show more
+   than 0 fixes in the last hour.
 4. In the app, the animal appears on the map.
 
 ---
 
 ## 4. What changed in this version
 
-### Added
+### Version 2.5 — full review fixes
+
+A four-agent review found about 70 problems across the collar, gateway, database
+and app. All of them are fixed in code, or listed below as something only a
+person can do. The full report — every finding, what changed, and the
+step-by-step runbook — is in the **FarmTrack Fix Report** artifact shared with
+the team, and in [docs/SESSION_LOG.md](docs/SESSION_LOG.md).
+
+The five critical fixes:
+
+1. **The app no longer shows an escaped animal as safe.** Any position outside
+   every fence is a breach, however far out. The app now takes each animal's
+   status from the server instead of re-deciding it on the phone.
+2. **The collar no longer beeps a verdict it cannot know.** It only acts on a
+   reply to its own message that was backed by a GPS fix, and goes quiet after
+   three cycles without one.
+3. **No account can make itself admin.** New accounts are always staff, and
+   users cannot change their own role.
+4. **Live updates keep working after the hourly login refresh.**
+5. **The public app key can no longer read animals' live positions.**
+
+Other notable changes:
+
+- **Radio protocol v2** ([firmware/src/packet.h](firmware/src/packet.h)) — replies
+  echo the message number, carry real GPS time, and are sent IQ-inverted. **Both
+  boards must be reflashed together.** The collar ID formula changed (the old one
+  could repeat between collars); re-key the existing collar with
+  [app/supabase/rekey_collar.sql](app/supabase/rekey_collar.sql).
+- **Gateway rebuilt** — listens and uploads at the same time, batches readings
+  over one kept-open secure connection with timeouts, checks Supabase's
+  certificate, and recovers on its own instead of failing after ~20 minutes.
+- **Watchdogs** on both boards; the collar send interval is back to **3 s**.
+- **Database** — [app/supabase/schema.sql](app/supabase/schema.sql) now matches
+  the live database and can be re-run safely. Alerts are raised only when an
+  animal's state changes and resolve themselves; stationary and low-battery
+  alerts exist; old GPS rows are thinned after 30 days. Tests in
+  [app/supabase/tests/](app/supabase/tests/).
+- **App** — push notifications for breaches (Android needs Firebase set up — see
+  [app/README.md](app/README.md)), a working **Emergency Disable** that silences
+  all collars for an hour, editing animals and pairing collars, fence buffer and
+  on/off settings, honest "last data" and offline status, and no unused
+  background-location permissions.
+- **Field-test tools** — the log analyser handles midnight, collar reboots and the
+  new log lines.
+
+#### Needs a person (not fixable in code)
+
+- **Hardware:** move the LoRa DIO0 wire from GPIO2 to GPIO26; replace the AMS1117
+  regulator with a low-dropout one before running on a LiPo; add a battery
+  voltage divider on GPIO35 (then set `BATTERY_SENSE_ENABLED 1`).
+- **Accounts:** Firebase (Android push), EAS environment variables, turning off
+  public sign-ups in Supabase.
+- **Before any app-store upload:** real icon artwork and your own bundle ID.
+
+#### Known issues
+
+- Nothing in v2.5 has run on the real boards or a phone yet. The runbook's
+  bench tests come first.
+- Collar battery reads "unknown" until the voltage divider is fitted, so the
+  low-battery alert cannot fire yet.
+- The outdoor field test has not got a GPS fix yet — see
+  [docs/field-tests/SUMMARY.md](docs/field-tests/SUMMARY.md).
+- Supabase's PostGIS table `spatial_ref_sys` keeps its public write permission
+  (only Supabase can change it). v2.5 blocks it at the API instead, with a
+  request check — confirm it with the test in
+  [app/supabase/README.md](app/supabase/README.md).
+
+### Version 2.4
+
+#### Added
 
 - **Collar firmware** ([firmware/src/collar.cpp](firmware/src/collar.cpp)) — GPS
   fix → LoRa uplink → waits for the fence state → beeps (1 beep = warning,
@@ -173,7 +262,7 @@ Exact steps: [firmware/README.md → Collar and gateway](firmware/README.md#7-co
   [field-test plans, data and results](docs/field-tests/).
 - **Claude Code agents** in [.claude/agents/](.claude/agents/).
 
-### Changed
+#### Changed
 
 - **App upgraded to Expo SDK 57** (React Native 0.86, React 19.2). Run
   `npm install` again after pulling.
@@ -188,38 +277,20 @@ Exact steps: [firmware/README.md → Collar and gateway](firmware/README.md#7-co
 - **GPS must be powered from VIN (5 V), not 3V3.** On 3V3 it kept restarting.
 - **GPIO2 (the blue LED) is left alone** in the collar, gateway and GPS test,
   because on the current hardware the LoRa DIO0 wire is on GPIO2.
-- **Collar send interval is currently 30 s** (temporary, for diagnosis — normal
-  is 3 s). See `SEND_INTERVAL_MS` in `collar.cpp`.
+- **Collar send interval was temporarily 30 s** for diagnosis (back to 3 s in v2.5).
 
-### Removed
+#### Removed
 
 - `firmware/TEST CODES /gps.cpp` — an old draft that was never built.
 - `react-native-maps` and `expo-av` from the app.
 
-### Ignored (never committed)
+#### Ignored (never committed)
 
 - `app/.env`, `firmware/src/secrets.h` — real keys.
 - `firmware/logs/` — raw serial-monitor captures.
 - `.vscode/c_cpp_properties.json` and friends — machine-specific paths.
 - `docs/*.pdf` — manuscript drafts (repo is public; share them on the group drive).
 - Everything under `.claude/` **except** `.claude/agents/`.
-
-### Known issues
-
-- [app/supabase/schema.sql](app/supabase/schema.sql) does **not** fully match the
-  live database: the live one also has the `gateways` table, the
-  `ingest_telemetry()` function, extra `location_logs` columns, and `'LoRa'` as a
-  connection type. So `schema.sql` alone cannot build a working backend from
-  scratch. Use the shared project.
-- **Do not run** [app/supabase/gateway_ingest.sql](app/supabase/gateway_ingest.sql).
-  It clashes with the live database and is kept only as design notes.
-- The gateway's uploads can start failing (`HTTP -1`, `-11`, `-29312`) after
-  about 20 minutes of running. Suspected cause: it opens a fresh secure
-  connection for every reading. Not fixed yet — press the gateway's reset button
-  to bring it back.
-- Collar battery level is a fixed 85 % until a battery sensor is added.
-- The outdoor field test has not got a GPS fix yet — see
-  [docs/field-tests/SUMMARY.md](docs/field-tests/SUMMARY.md).
 
 ---
 

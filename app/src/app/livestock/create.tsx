@@ -1,167 +1,227 @@
-import { Stack, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useState } from 'react';
-import {
-  Alert,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { Alert, StyleSheet, View } from 'react-native';
 
-import { Button } from '@/components/ui/Card';
+import { AppHeader } from '@/components/ui/AppHeader';
+import { Button } from '@/components/ui/Button';
+import { Card } from '@/components/ui/Card';
+import { Chip } from '@/components/ui/Chip';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { Screen } from '@/components/ui/Screen';
+import { Text } from '@/components/ui/Text';
+import { TextField } from '@/components/ui/TextField';
+import { ToneColors } from '@/components/ui/tones';
 import { Colors, Radius, Spacing } from '@/constants/theme';
+import { batteryLabel } from '@/lib/utils';
 import { useFarm } from '@/stores/FarmDataContext';
-import type { HealthStatus } from '@/types/database';
+import type { HealthStatus, Livestock } from '@/types/database';
 
-const HEALTH: HealthStatus[] = ['healthy', 'monitoring', 'critical'];
+const HEALTH: { value: HealthStatus; label: string; color: string }[] = [
+  { value: 'healthy', label: 'Healthy', color: ToneColors.success.color },
+  { value: 'monitoring', label: 'Monitoring', color: ToneColors.warning.color },
+  { value: 'critical', label: 'Critical', color: ToneColors.critical.color },
+];
 
+/**
+ * Add or edit an animal.
+ * - `/livestock/create`: new animal.
+ * - `/livestock/create?id=<livestock id>`: edit that animal.
+ * - `/livestock/create?collarId=<collar id>`: pair that collar, either with an
+ *   existing animal that has no collar or with a new one (Hardware tab "Pair").
+ */
 export default function CreateLivestockScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ id?: string; collarId?: string }>();
   const { collars, livestock, upsertLivestock, isAdmin } = useFarm();
 
-  const [name, setName] = useState('');
-  const [tagId, setTagId] = useState('');
-  const [breed, setBreed] = useState('Angus');
-  const [age, setAge] = useState('3');
-  const [health, setHealth] = useState<HealthStatus>('healthy');
-  const [collarId, setCollarId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(params.id ?? null);
+  const editing = editingId ? livestock.find((l) => l.id === editingId) : undefined;
+
+  const [name, setName] = useState(editing?.name ?? '');
+  const [tagId, setTagId] = useState(editing?.tag_id ?? '');
+  const [breed, setBreed] = useState(editing?.breed ?? '');
+  const [age, setAge] = useState(editing?.age != null ? String(editing.age) : '');
+  const [health, setHealth] = useState<HealthStatus>(editing?.health_status ?? 'healthy');
+  const [collarId, setCollarId] = useState<string | null>(params.collarId ?? editing?.collar_id ?? null);
   const [saving, setSaving] = useState(false);
 
-  const unpaired = collars.filter((c) => !livestock.some((l) => l.collar_id === c.id));
+  // Collars free to pair, plus the one this animal already wears.
+  const pairable = collars.filter(
+    (c) => c.id === editing?.collar_id || !livestock.some((l) => l.collar_id === c.id)
+  );
+  const animalsWithoutCollar = livestock.filter((l) => !l.collar_id);
+  const pairingCollar = params.collarId ? collars.find((c) => c.id === params.collarId) : undefined;
+
+  const loadAnimal = (animal: Livestock) => {
+    setEditingId(animal.id);
+    setName(animal.name);
+    setTagId(animal.tag_id);
+    setBreed(animal.breed);
+    setAge(animal.age != null ? String(animal.age) : '');
+    setHealth(animal.health_status);
+  };
 
   const onSave = async () => {
     if (!isAdmin) {
-      Alert.alert('Permission denied', 'Only admins can create livestock.');
+      Alert.alert('Permission denied', 'Only admins can add or edit livestock.');
       return;
     }
     if (!name.trim() || !tagId.trim() || !breed.trim()) {
       Alert.alert('Missing fields', 'Name, tag ID, and breed are required.');
       return;
     }
+    const ageValue = age.trim() === '' ? null : Number(age.replace(',', '.'));
+    if (ageValue !== null && (!Number.isFinite(ageValue) || ageValue < 0 || ageValue > 99)) {
+      Alert.alert('Check the age', 'Enter the age in years, for example 3 or 2.5.');
+      return;
+    }
     try {
       setSaving(true);
       await upsertLivestock({
+        id: editingId ?? undefined,
         name: name.trim(),
         tag_id: tagId.trim(),
         breed: breed.trim(),
-        age: age ? Number(age) : null,
+        age: ageValue,
         health_status: health,
         collar_id: collarId,
       });
       router.back();
     } catch (err) {
-      Alert.alert('Error', err instanceof Error ? err.message : 'Could not save');
+      // Stay on the form so nothing typed is lost.
+      Alert.alert('Could not save', err instanceof Error ? err.message : 'Unknown error');
     } finally {
       setSaving(false);
     }
   };
 
+  const title = editingId ? 'Edit animal' : pairingCollar ? 'Pair collar' : 'Add animal';
+
+  if (params.id && !editing) {
+    return (
+      <Screen header={<AppHeader variant="stack" inScroll onBack={() => router.back()} title="Not found" />}>
+        <EmptyState title="This animal no longer exists." message="It may have been deleted on another phone." />
+      </Screen>
+    );
+  }
+
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-      <Stack.Screen options={{ title: 'Add Animal' }} />
+    <Screen
+      keyboard
+      header={
+        <AppHeader
+          variant="stack"
+          inScroll
+          onBack={() => router.back()}
+          overline="Livestock"
+          title={title}
+          subtitle={editing ? editing.name : undefined}
+        />
+      }>
+      {pairingCollar && !params.id ? (
+        <Card style={styles.pairCard}>
+          <Text variant="heading" color={Colors.infoInk}>
+            Pairing collar {pairingCollar.device_hardware_id}
+          </Text>
+          {animalsWithoutCollar.length > 0 ? (
+            <>
+              <Text variant="caption" color="secondary">
+                Pick an animal without a collar, or fill in a new animal below.
+              </Text>
+              <View style={styles.chips}>
+                {animalsWithoutCollar.map((animal) => (
+                  <Chip
+                    key={animal.id}
+                    label={`${animal.name} · ${animal.tag_id}`}
+                    selected={editingId === animal.id}
+                    onPress={() => loadAnimal(animal)}
+                  />
+                ))}
+              </View>
+            </>
+          ) : (
+            <Text variant="caption" color="secondary">
+              Every animal already has a collar. Add a new animal below.
+            </Text>
+          )}
+        </Card>
+      ) : null}
 
-      <Field label="Display Name" value={name} onChangeText={setName} placeholder="Cow #410" />
-      <Field label="Tag ID" value={tagId} onChangeText={setTagId} placeholder="410" />
-      <Field label="Breed" value={breed} onChangeText={setBreed} placeholder="Angus" />
-      <Field
-        label="Age (years)"
-        value={age}
-        onChangeText={setAge}
-        placeholder="3"
-        keyboardType="decimal-pad"
-      />
-
-      <Text style={styles.label}>Health Status</Text>
-      <View style={styles.chips}>
-        {HEALTH.map((h) => (
-          <Pressable
-            key={h}
-            onPress={() => setHealth(h)}
-            style={[styles.chip, health === h && styles.chipActive]}>
-            <Text style={[styles.chipText, health === h && styles.chipTextActive]}>{h}</Text>
-          </Pressable>
-        ))}
+      <View style={styles.group}>
+        <Text variant="overline" color="secondary">
+          Animal
+        </Text>
+        <TextField label="Display name" value={name} onChangeText={setName} placeholder="Cow #410" returnKeyType="next" />
+        <TextField
+          label="Tag ID"
+          value={tagId}
+          onChangeText={setTagId}
+          placeholder="410"
+          autoCapitalize="characters"
+          returnKeyType="next"
+        />
+        <TextField label="Breed" value={breed} onChangeText={setBreed} placeholder="Angus" returnKeyType="next" />
+        <TextField
+          label="Age (years)"
+          value={age}
+          onChangeText={setAge}
+          placeholder="3"
+          keyboardType="decimal-pad"
+          helper="Optional. For example 3 or 2.5."
+        />
       </View>
 
-      <Text style={styles.label}>Pair Collar</Text>
-      <Pressable
-        style={[styles.chip, !collarId && styles.chipActive, { marginBottom: 8 }]}
-        onPress={() => setCollarId(null)}>
-        <Text style={[styles.chipText, !collarId && styles.chipTextActive]}>Unpaired</Text>
-      </Pressable>
-      {unpaired.map((c) => (
-        <Pressable
-          key={c.id}
-          style={[styles.chip, collarId === c.id && styles.chipActive, { marginBottom: 8 }]}
-          onPress={() => setCollarId(c.id)}>
-          <Text style={[styles.chipText, collarId === c.id && styles.chipTextActive]}>
-            {c.device_hardware_id} · {c.battery_level}%
-          </Text>
-        </Pressable>
-      ))}
+      <View style={styles.group}>
+        <Text variant="overline" color="secondary">
+          Health status
+        </Text>
+        <View style={styles.chips} accessibilityRole="radiogroup">
+          {HEALTH.map((h) => (
+            <Chip
+              key={h.value}
+              label={h.label}
+              dotColor={h.color}
+              selected={health === h.value}
+              onPress={() => setHealth(h.value)}
+            />
+          ))}
+        </View>
+      </View>
+
+      <View style={styles.group}>
+        <Text variant="overline" color="secondary">
+          Collar
+        </Text>
+        <View style={styles.collarList} accessibilityRole="radiogroup">
+          <Chip block label="No collar" icon="link-variant-off" selected={!collarId} onPress={() => setCollarId(null)} />
+          {pairable.map((c) => (
+            <Chip
+              key={c.id}
+              block
+              label={c.device_hardware_id}
+              detail={`Battery ${batteryLabel(c.battery_level)}`}
+              icon="access-point"
+              selected={collarId === c.id}
+              onPress={() => setCollarId(c.id)}
+            />
+          ))}
+        </View>
+      </View>
 
       <Button
-        label={saving ? 'Saving…' : 'Save Animal'}
+        label={saving ? 'Saving…' : editingId ? 'Save changes' : 'Save animal'}
+        icon="content-save-outline"
+        loading={saving}
         onPress={onSave}
-        disabled={saving}
-        style={{ marginTop: 16 }}
+        disabled={!isAdmin}
       />
-    </ScrollView>
-  );
-}
-
-function Field({
-  label,
-  ...props
-}: {
-  label: string;
-} & React.ComponentProps<typeof TextInput>) {
-  return (
-    <View style={{ marginBottom: 14 }}>
-      <Text style={styles.label}>{label}</Text>
-      <TextInput
-        placeholderTextColor={Colors.textMuted}
-        style={styles.input}
-        {...props}
-      />
-    </View>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: Colors.background },
-  content: { padding: Spacing.lg, paddingBottom: 40 },
-  label: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: Colors.text,
-    marginBottom: 6,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: Colors.border,
-    backgroundColor: Colors.surface,
-    borderRadius: Radius.md,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 16,
-    color: Colors.text,
-  },
-  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16 },
-  chip: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: Radius.pill,
-    backgroundColor: Colors.surfaceMuted,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  chipActive: {
-    backgroundColor: Colors.primary,
-    borderColor: Colors.primary,
-  },
-  chipText: { color: Colors.text, fontWeight: '600', textTransform: 'capitalize', fontSize: 13 },
-  chipTextActive: { color: '#fff' },
+  pairCard: { backgroundColor: Colors.infoSoft, borderColor: Colors.infoSoft, gap: Spacing.sm, borderRadius: Radius.lg },
+  group: { gap: Spacing.md },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
+  collarList: { gap: Spacing.sm },
 });

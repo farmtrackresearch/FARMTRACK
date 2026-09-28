@@ -1,26 +1,22 @@
-import type { FenceEval } from '@/lib/utils';
+import type { AnimalStatus } from '@/types/database';
 
 /**
- * Per-animal boundary breach state machine: in_bounds -> breach_active -> resolved.
- * Pure function — no timers, no side effects — so the same logic can run
- * client-side against `locations` today or move into a server-side scheduled
- * job / Supabase Edge Function later without a rewrite.
+ * Per-animal breach tracker: in_bounds -> breach_active -> resolved.
+ *
+ * The server decides fence state (detect_geofence_events); this only turns a
+ * stream of server statuses into edges, so the app sounds the siren once when
+ * an animal enters breach and stops it once the server says it has left —
+ * however many times the same status is re-delivered (reloads, reconnects,
+ * unrelated column updates). Pure function: no timers, no side effects.
  */
 export type BreachRecord = {
-  fenceId: string | null;
-  fenceName: string | null;
   startedAt: number;
-  alertId: string;
+  /** Server alert id for this breach, once the boundary_breach alert has been seen. */
+  alertId: string | null;
 };
 
 export type BreachTransition =
-  | {
-      type: 'enter_breach';
-      livestockId: string;
-      fenceId: string | null;
-      fenceName: string | null;
-      distanceMeters: number;
-    }
+  | { type: 'enter_breach'; livestockId: string }
   | {
       type: 'resolve_breach';
       livestockId: string;
@@ -29,30 +25,28 @@ export type BreachTransition =
     };
 
 export function stepBreachStateMachine(
-  evaluations: { livestockId: string; evaluation: FenceEval }[],
-  prevRecords: Record<string, BreachRecord>
+  statuses: { livestockId: string; status: AnimalStatus }[],
+  prevRecords: Record<string, BreachRecord>,
+  now: number = Date.now()
 ): BreachTransition[] {
   const transitions: BreachTransition[] = [];
+  const seen = new Set<string>();
 
-  for (const { livestockId, evaluation } of evaluations) {
+  for (const { livestockId, status } of statuses) {
+    seen.add(livestockId);
     const prev = prevRecords[livestockId];
-    if (evaluation.state === 'breach') {
-      if (!prev) {
-        transitions.push({
-          type: 'enter_breach',
-          livestockId,
-          fenceId: evaluation.fenceId,
-          fenceName: evaluation.fenceName,
-          distanceMeters: evaluation.distanceMeters,
-        });
-      }
+    if (status === 'breach') {
+      if (!prev) transitions.push({ type: 'enter_breach', livestockId });
     } else if (prev) {
-      transitions.push({
-        type: 'resolve_breach',
-        livestockId,
-        record: prev,
-        durationMs: Date.now() - prev.startedAt,
-      });
+      transitions.push({ type: 'resolve_breach', livestockId, record: prev, durationMs: now - prev.startedAt });
+    }
+  }
+
+  // An animal deleted (or unassigned from this farm) while in breach must not
+  // leave its siren running forever.
+  for (const [livestockId, record] of Object.entries(prevRecords)) {
+    if (!seen.has(livestockId)) {
+      transitions.push({ type: 'resolve_breach', livestockId, record, durationMs: now - record.startedAt });
     }
   }
 

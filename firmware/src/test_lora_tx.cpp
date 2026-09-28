@@ -7,8 +7,14 @@
 //
 //  Build/flash:  pio run -e lora_tx -t upload -t monitor
 //
-//  Sends "FarmTrack #<n>" once per second. Run TEST 3b on a second board to
-//  confirm the link. LED blinks on each send.
+//  Sends "FarmTrack #<n>" every 2 seconds using the REAL link profile
+//  (lora_link.h: SF9, CRC on, sync word 0xF3) - the same settings as the
+//  collar and gateway, so a pass here means those two can hear each other
+//  too. Run TEST 3b on a second board to confirm the link. A real gateway
+//  in range will log these as "ignored packet" - that is expected.
+//
+//  Every 2s, not 1s: at SF9 each packet is ~165ms on air, and 2s keeps the
+//  duty cycle under 10%.
 //
 //  Controls:  's' or BOOT = stop ,  'r' or BOOT = resume
 // ===========================================================================
@@ -17,14 +23,14 @@
 #include <SPI.h>
 #include <LoRa.h>
 #include "pins.h"
+#include "lora_link.h"
 
 static bool running = true;
 static bool loraOk  = false;
 static uint32_t counter = 0;
 
 // --------------------------- stop / resume ---------------------------------
-static void stopProgram()   { running = false; digitalWrite(PIN_LED, LOW);
-                              Serial.println(">> STOPPED (send 'r' or press BOOT)"); }
+static void stopProgram()   { running = false; Serial.println(">> STOPPED (send 'r' or press BOOT)"); }
 static void resumeProgram() { running = true;  Serial.println(">> RESUMED"); }
 static bool bootPressed() {
   static int last = HIGH; static uint32_t t = 0;
@@ -44,17 +50,15 @@ static void handleControls() {
 // ------------------------------ setup/loop --------------------------------
 void setup() {
   Serial.begin(115200);
-  pinMode(PIN_LED, OUTPUT);
+  pinMode(PIN_LED, INPUT);   // never an output - DIO0 may be on this pin (pins.h)
   pinMode(PIN_BOOT_BTN, INPUT_PULLUP);
   delay(1000);
 
   Serial.println("\n=== FarmTrack TEST 3a - LoRa SENDER ===");
-  LoRa.setPins(PIN_LORA_SS, PIN_LORA_RST, PIN_LORA_DIO0);
-
-  if (LoRa.begin(LORA_FREQ_HZ)) {
+  if (loraBeginLink()) {
     loraOk = true;
-    Serial.printf("LoRa OK  freq=%.1f MHz  SS=%d RST=%d DIO0=%d\n",
-                  LORA_FREQ_HZ / 1e6, PIN_LORA_SS, PIN_LORA_RST, PIN_LORA_DIO0);
+    Serial.printf("LoRa OK  freq=%.1f MHz  SF=%d  sync=0x%02X  CRC on  SS=%d RST=%d\n",
+                  LORA_FREQ_HZ / 1e6, LORA_SF, LORA_SYNC_WORD, PIN_LORA_SS, PIN_LORA_RST);
   } else {
     Serial.println("LoRa FAILED - check 3V3 power, SPI wiring (18/19/23), NSS/RST/DIO0");
   }
@@ -75,15 +79,16 @@ void loop() {
   }
 
   static uint32_t last = 0;
-  if (millis() - last >= 1000) {
+  if (millis() - last >= 2000) {
     last = millis();
     counter++;
 
-    LoRa.beginPacket();
-    LoRa.printf("FarmTrack #%lu", (unsigned long)counter);
-    LoRa.endPacket();               // blocks until sent (~tens of ms)
-
-    Serial.printf("sent  #%lu\n", (unsigned long)counter);
-    digitalWrite(PIN_LED, HIGH); delay(20); digitalWrite(PIN_LED, LOW);
+    char msg[24];
+    int len = snprintf(msg, sizeof(msg), "FarmTrack #%lu", (unsigned long)counter);
+    if (loraSend((const uint8_t*)msg, len)) {
+      Serial.printf("sent  #%lu\n", (unsigned long)counter);
+    } else {
+      Serial.printf("send #%lu TIMED OUT - radio not responding\n", (unsigned long)counter);
+    }
   }
 }

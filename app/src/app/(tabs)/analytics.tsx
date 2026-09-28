@@ -1,167 +1,186 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useMemo, useState } from 'react';
+import { FlatList, RefreshControl, StyleSheet, View } from 'react-native';
 
 import { CollarCard } from '@/components/livestock/CollarCard';
+import { AppHeader } from '@/components/ui/AppHeader';
 import { Card } from '@/components/ui/Card';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { ListRow } from '@/components/ui/ListRow';
 import { ProgressBar } from '@/components/ui/ProgressBar';
-import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
-import { SectionEmoji } from '@/constants/navigation';
+import { Screen, screenContent, useBottomSpace } from '@/components/ui/Screen';
+import { SectionHeader } from '@/components/ui/SectionHeader';
+import { StatRow, StatTile } from '@/components/ui/StatTile';
+import { Text } from '@/components/ui/Text';
+import { Colors, Layout, Radius, Spacing } from '@/constants/theme';
+import { combineTrainingStats, trainingStatsByAnimal } from '@/lib/utils';
 import { useFarm } from '@/stores/FarmDataContext';
 
-/** Analytics list — tap an animal for training/detail view */
+/**
+ * Analytics list — tap an animal for training/detail view. Training success
+ * is derived from alert history (warnings that did not escalate to a breach),
+ * over the alerts currently loaded: every unresolved one plus the last 100.
+ */
 export default function AnalyticsScreen() {
   const router = useRouter();
-  const { livestock } = useFarm();
+  const { livestock, alerts, now, refresh } = useFarm();
+  const bottom = useBottomSpace();
+  const [refreshing, setRefreshing] = useState(false);
 
-  const avgSuccess =
-    livestock.length === 0
-      ? 0
-      : Math.round(
-          livestock.reduce((sum, l) => sum + (l.training_success_rate ?? 0), 0) / livestock.length
-        );
+  const statsByAnimal = useMemo(() => trainingStatsByAnimal(alerts, now), [alerts, now]);
+  const herd = useMemo(() => combineTrainingStats(Object.values(statsByAnimal)), [statsByAnimal]);
+  const herdLabel = herd.successRate == null ? '—' : `${herd.successRate}%`;
+  const audioWarnings = useMemo(
+    () => livestock.reduce((sum, l) => sum + (l.audio_warning_count ?? 0), 0),
+    [livestock]
+  );
 
-  return (
-    <View style={styles.root}>
-      <View style={styles.header}>
-        <Text style={styles.title}>{SectionEmoji.analytics} Analytics</Text>
-        <Text style={styles.subtitle}>Training effectiveness & herd insights</Text>
-      </View>
+  const onRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+  const header = (
+    <>
+      <AppHeader inScroll overline="Herd insights" title="Analytics" subtitle="How well the herd is learning the fences">
+        <StatRow>
+          <StatTile icon="school-outline" label="Success rate" value={herdLabel} />
+          <StatTile icon="alert-outline" label="Fence warnings" value={herd.warnings} />
+          <StatTile icon="volume-high" label="Audio warnings" value={audioWarnings} />
+        </StatRow>
+      </AppHeader>
+      <View style={[screenContent, styles.headerContent]}>
         <Card>
           <View style={styles.cardHead}>
             <View style={styles.iconBox}>
-              <MaterialCommunityIcons name="chart-line" size={20} color={Colors.primary} />
+              <MaterialCommunityIcons name="chart-line" size={22} color={Colors.primary} />
             </View>
-            <View>
-              <Text style={styles.cardTitle}>Herd Training Progress</Text>
-              <Text style={styles.cardSub}>Operant conditioning effectiveness</Text>
+            <View style={styles.flex}>
+              <Text variant="heading">Herd training progress</Text>
+              <Text variant="caption" color="secondary">
+                Warnings that turned animals back, from recent alerts
+              </Text>
             </View>
           </View>
-
           <View style={styles.rateRow}>
-            <Text style={styles.rateLabel}>Avg Success Rate</Text>
-            <Text style={styles.rateValue}>{avgSuccess}%</Text>
+            <Text variant="bodyStrong" color="secondary">
+              Success rate
+            </Text>
+            <Text variant="stat" color="primary">
+              {herdLabel}
+            </Text>
           </View>
-          <ProgressBar progress={avgSuccess} height={10} />
-
+          <ProgressBar progress={herd.successRate ?? 0} height={10} accessibilityLabel="Herd success rate" />
+          <Text variant="caption" color="secondary" style={styles.rateNote}>
+            {herd.warnings === 0
+              ? 'No fence warnings in the recent history yet.'
+              : `${herd.warnings - herd.escalated} of ${herd.warnings} warnings did not lead to a breach.`}
+          </Text>
           <View style={styles.metrics}>
-            <View style={styles.metric}>
-              <View style={[styles.metricIcon, { backgroundColor: Colors.warningSoft }]}>
-                <MaterialCommunityIcons name="volume-high" size={18} color={Colors.warning} />
-              </View>
-              <Text style={styles.metricLabel}>Audio Warnings</Text>
-              <Text style={styles.metricValue}>
-                {livestock.reduce((s, l) => s + l.audio_warning_count, 0)}
-              </Text>
-            </View>
-            <View style={styles.metric}>
-              <View style={[styles.metricIcon, { backgroundColor: Colors.criticalSoft }]}>
-                <MaterialCommunityIcons name="lightning-bolt" size={18} color={Colors.critical} />
-              </View>
-              <Text style={styles.metricLabel}>Vibration Pulses</Text>
-              <Text style={styles.metricValue}>
-                {livestock.reduce((s, l) => s + l.vibration_pulse_count, 0)}
-              </Text>
-            </View>
+            <StatTile variant="surface" icon="volume-high" label="Audio warnings" value={audioWarnings} />
+            <StatTile variant="surface" icon="vibrate-off" label="Vibration motor" value="Not fitted" />
           </View>
         </Card>
+        <SectionHeader title="Animals" icon="cow" count={livestock.length} />
+      </View>
+    </>
+  );
 
-        <Text style={styles.section}>Animals</Text>
-        {livestock.map((animal) => (
-          <Pressable key={animal.id} onPress={() => router.push(`/livestock/${animal.id}`)}>
-            <View style={styles.animalRow}>
-              <View>
-                <Text style={styles.animalName}>{animal.name}</Text>
-                <Text style={styles.animalMeta}>
-                  {animal.breed} · Success {animal.training_success_rate}%
-                </Text>
-              </View>
-              <MaterialCommunityIcons name="chevron-right" size={22} color={Colors.textMuted} />
-            </View>
-            <ProgressBar
-              progress={animal.training_success_rate}
-              style={{ marginBottom: 16 }}
-              height={6}
-            />
-          </Pressable>
-        ))}
-
-        <Text style={[styles.section, { marginTop: 8 }]}>Battery Snapshot</Text>
+  const footer =
+    livestock.length > 0 ? (
+      <View style={[screenContent, styles.footer]}>
+        <SectionHeader
+          title="Battery snapshot"
+          icon="battery-heart-variant"
+          actionLabel="View all"
+          onAction={() => router.push('/(tabs)/hardware')}
+        />
         {livestock.slice(0, 3).map((animal) => (
           <CollarCard
             key={animal.id}
             animal={animal}
             collar={animal.collar}
+            now={now}
             compact
             onPress={() => router.push(`/livestock/${animal.id}`)}
           />
         ))}
-      </ScrollView>
-    </View>
+      </View>
+    ) : null;
+
+  return (
+    <Screen mode="fixed">
+      <FlatList
+        data={livestock}
+        keyExtractor={(item) => item.id}
+        ListHeaderComponent={header}
+        ListFooterComponent={footer}
+        contentContainerStyle={{ paddingBottom: bottom }}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => void onRefresh()}
+            tintColor={Colors.textInverse}
+            colors={[Colors.primary]}
+          />
+        }
+        ItemSeparatorComponent={Separator}
+        renderItem={({ item: animal }) => {
+          const rate = statsByAnimal[animal.id]?.successRate ?? null;
+          return (
+            <View style={styles.rowWrap}>
+              <ListRow
+                leadingIcon="cow"
+                title={animal.name}
+                subtitle={`${animal.breed} · ${rate == null ? 'no warnings yet' : `success ${rate}%`}`}
+                chevron
+                onPress={() => router.push(`/livestock/${animal.id}`)}
+                accessibilityLabel={`${animal.name}, ${rate == null ? 'no warnings yet' : `training success ${rate} percent`}`}
+                footer={<ProgressBar progress={rate ?? 0} height={6} style={styles.rowBar} />}
+              />
+            </View>
+          );
+        }}
+        ListEmptyComponent={
+          <View style={screenContent}>
+            <EmptyState
+              title="No animals yet"
+              message="Training results appear here once animals wear paired collars."
+            />
+          </View>
+        }
+      />
+    </Screen>
   );
 }
 
+function Separator() {
+  return <View style={styles.separator} />;
+}
+
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: Colors.background },
-  header: {
-    backgroundColor: Colors.surface,
-    paddingTop: 56,
-    paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.lg,
-  },
-  title: { ...Typography.h1, fontSize: 26, color: Colors.text },
-  subtitle: { fontSize: 13, color: Colors.textSecondary, marginTop: 2 },
-  content: { padding: Spacing.lg, paddingBottom: 40 },
-  cardHead: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
+  flex: { flex: 1, minWidth: 0 },
+  headerContent: { gap: Layout.sectionGap, paddingBottom: Spacing.md },
+  cardHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, marginBottom: Spacing.lg },
   iconBox: {
-    width: 40,
-    height: 40,
+    width: 44,
+    height: 44,
     borderRadius: Radius.sm,
-    backgroundColor: Colors.successSoft,
+    backgroundColor: Colors.primarySoft,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  cardTitle: { fontWeight: '700', fontSize: 16, color: Colors.text },
-  cardSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
-  rateRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  rateLabel: { color: Colors.textSecondary, fontWeight: '600' },
-  rateValue: { color: Colors.primary, fontWeight: '800', fontSize: 16 },
-  metrics: { flexDirection: 'row', gap: 10, marginTop: 16 },
-  metric: {
-    flex: 1,
-    backgroundColor: Colors.surfaceMuted,
-    borderRadius: Radius.md,
-    padding: Spacing.md,
-  },
-  metricIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 8,
-  },
-  metricLabel: { fontSize: 12, color: Colors.textMuted },
-  metricValue: { fontSize: 20, fontWeight: '800', color: Colors.text, marginTop: 4 },
-  section: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: Colors.text,
-    marginTop: Spacing.xl,
-    marginBottom: Spacing.md,
-  },
-  animalRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  animalName: { fontWeight: '700', color: Colors.text, fontSize: 15 },
-  animalMeta: { color: Colors.textMuted, fontSize: 12, marginTop: 2 },
+  rateRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.sm },
+  rateNote: { marginTop: Spacing.sm },
+  metrics: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.lg },
+  rowWrap: { paddingHorizontal: Layout.screenPadding },
+  rowBar: { marginTop: Spacing.sm },
+  separator: { height: Spacing.md },
+  footer: { gap: Spacing.md, paddingTop: Layout.sectionGap },
 });

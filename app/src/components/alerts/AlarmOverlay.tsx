@@ -1,14 +1,23 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Colors, Radius, Shadows, Spacing } from '@/constants/theme';
+import { Text } from '@/components/ui/Text';
+import { A11y, Colors, Radius, Spacing } from '@/constants/theme';
 import { useAlarm } from '@/hooks/useAlarm';
 
+/**
+ * Full-screen alarm for the most urgent active alarm. Mounted in the root
+ * layout so it covers every screen. Solid red (breach) or dark amber
+ * (warning) with large white type, readable in sunlight. Acknowledging stops
+ * that animal's alarm only; others stay queued behind it.
+ */
 export function AlarmOverlay() {
   const insets = useSafeAreaInsets();
-  const { activeAlarm, dismissAlarm } = useAlarm();
+  const router = useRouter();
+  const { activeAlarm, alarms, dismissAlarm, dismissAllAlarms } = useAlarm();
   const [pulse] = useState(() => new Animated.Value(1));
 
   useEffect(() => {
@@ -18,16 +27,8 @@ export function AlarmOverlay() {
     }
     const anim = Animated.loop(
       Animated.sequence([
-        Animated.timing(pulse, {
-          toValue: 1.08,
-          duration: 450,
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulse, {
-          toValue: 1,
-          duration: 450,
-          useNativeDriver: true,
-        }),
+        Animated.timing(pulse, { toValue: 1.12, duration: 450, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1, duration: 450, useNativeDriver: true }),
       ])
     );
     anim.start();
@@ -37,156 +38,183 @@ export function AlarmOverlay() {
   if (!activeAlarm) return null;
 
   const isBreach = activeAlarm.severity === 'breach';
-  const bg = isBreach ? Colors.critical : Colors.warning;
-  const icon = isBreach ? 'alert-decagram' : 'alert-circle-outline';
-  const header = isBreach ? 'FENCE BREACH ALARM' : 'FENCE PROXIMITY WARNING';
+  const bg = isBreach ? Colors.critical : Colors.warningInk;
+  const icon = isBreach ? 'alert-octagon' : 'alert';
+  const header = isBreach ? 'Fence breach alarm' : 'Fence proximity warning';
+  const others = alarms.length - 1;
+  const { sourceId } = activeAlarm;
 
   return (
     <View
-      pointerEvents="box-none"
-      style={[styles.root, { paddingTop: insets.top }]}>
-      <Animated.View
-        style={[
-          styles.container,
-          { backgroundColor: bg, transform: [{ scale: isBreach ? pulse : 1 }] },
-        ]}>
-        <View style={styles.headerRow}>
-          <View style={[styles.iconBadge, { backgroundColor: 'rgba(255,255,255,0.2)' }]}>
-            <MaterialCommunityIcons name={icon} size={26} color="#fff" />
+      style={[StyleSheet.absoluteFill, styles.root, { backgroundColor: bg }]}
+      accessibilityViewIsModal
+      accessibilityLiveRegion="assertive">
+      <ScrollView
+        contentContainerStyle={[
+          styles.scroll,
+          { paddingTop: insets.top + Spacing.xl, paddingBottom: insets.bottom + Spacing.xl },
+        ]}
+        bounces={false}>
+        <View style={styles.top}>
+          <View style={styles.labelRow}>
+            <View style={styles.labelPill}>
+              <Text variant="overline" color="inverse" maxFontSizeMultiplier={A11y.controlFontScale}>
+                {header}
+              </Text>
+            </View>
+            {others > 0 ? (
+              <Text variant="captionStrong" color="inverse" maxFontSizeMultiplier={A11y.controlFontScale}>
+                +{others} more waiting
+              </Text>
+            ) : null}
           </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.label}>{header}</Text>
-            <Text style={styles.title} numberOfLines={2}>
-              {activeAlarm.title}
-            </Text>
+
+          <View style={styles.iconWrap}>
+            <Animated.View style={[styles.iconRing, { transform: [{ scale: pulse }] }]} />
+            <View style={styles.iconCircle}>
+              <MaterialCommunityIcons name={icon} size={52} color={bg} />
+            </View>
           </View>
+
+          <Text variant="display" color="inverse" align="center" style={styles.title} accessibilityRole="header">
+            {activeAlarm.title}
+          </Text>
+          <Text variant="body" color="inverse" align="center" style={styles.message}>
+            {activeAlarm.message}
+          </Text>
+
+          {activeAlarm.fenceName ? (
+            <View style={styles.chip}>
+              <MaterialCommunityIcons name="fence" size={16} color={Colors.textInverse} />
+              <Text variant="captionStrong" color="inverse" numberOfLines={1} style={styles.chipText}>
+                {activeAlarm.fenceName}
+              </Text>
+            </View>
+          ) : null}
+          {activeAlarm.silenced ? (
+            <View style={styles.chip}>
+              <MaterialCommunityIcons name="volume-off" size={16} color={Colors.textInverse} />
+              <Text variant="captionStrong" color="inverse" style={styles.chipText}>
+                Sound stopped after 5 minutes. The animal is still outside.
+              </Text>
+            </View>
+          ) : null}
         </View>
-
-        <Text style={styles.message} numberOfLines={3}>
-          {activeAlarm.message}
-        </Text>
-
-        {activeAlarm.fenceName ? (
-          <View style={styles.fenceRow}>
-            <MaterialCommunityIcons name="vector-polygon" size={14} color="rgba(255,255,255,0.9)" />
-            <Text style={styles.fenceName}>{activeAlarm.fenceName}</Text>
-          </View>
-        ) : null}
 
         <View style={styles.actions}>
-          <Pressable onPress={() => void dismissAlarm()} style={[styles.btn, styles.btnPrimary]}>
-            <MaterialCommunityIcons name="check-circle-outline" size={18} color={bg} />
-            <Text style={[styles.btnText, { color: bg }]}>Acknowledge</Text>
+          <Pressable
+            onPress={() => dismissAlarm(sourceId)}
+            accessibilityRole="button"
+            accessibilityLabel="Acknowledge alarm"
+            style={({ pressed }) => [styles.primary, pressed && { opacity: 0.85 }]}>
+            <MaterialCommunityIcons name="check-circle-outline" size={24} color={bg} />
+            <Text variant="title" color={bg} maxFontSizeMultiplier={A11y.controlFontScale}>
+              Acknowledge
+            </Text>
           </Pressable>
           <Pressable
-            onPress={() => void dismissAlarm()}
-            style={[styles.btn, styles.btnGhost]}
-            hitSlop={8}>
-            <Text style={styles.btnTextGhost}>Dismiss</Text>
+            onPress={() => {
+              dismissAlarm(sourceId);
+              router.push({ pathname: '/livestock/[id]', params: { id: sourceId } });
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="View animal"
+            style={({ pressed }) => [styles.secondary, pressed && { backgroundColor: Colors.onDarkPressed }]}>
+            <MaterialCommunityIcons name="cow" size={22} color={Colors.textInverse} />
+            <Text variant="button" color="inverse" maxFontSizeMultiplier={A11y.controlFontScale}>
+              View animal
+            </Text>
           </Pressable>
+          {others > 0 ? (
+            // With several animals out at once, one tap clears every alarm so
+            // the farmer can reach the app (e.g. Emergency Disable).
+            <Pressable
+              onPress={dismissAllAlarms}
+              accessibilityRole="button"
+              accessibilityLabel={`Acknowledge all ${alarms.length} alarms`}
+              style={({ pressed }) => [styles.secondary, pressed && { backgroundColor: Colors.onDarkPressed }]}>
+              <MaterialCommunityIcons name="check-all" size={22} color={Colors.textInverse} />
+              <Text variant="button" color="inverse" maxFontSizeMultiplier={A11y.controlFontScale}>
+                Acknowledge all ({alarms.length})
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
-      </Animated.View>
+      </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 200,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: Spacing.lg,
-    backgroundColor: 'rgba(0,0,0,0.35)',
+  root: { zIndex: 200, elevation: 200 },
+  scroll: {
+    flexGrow: 1,
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.xxl,
+    gap: Spacing.xxxl,
   },
-  container: {
-    width: '100%',
-    maxWidth: 420,
-    borderRadius: Radius.xl,
-    padding: Spacing.xl,
-    gap: Spacing.md,
-    ...Shadows.card,
-  },
-  headerRow: {
+  top: { alignItems: 'center', gap: Spacing.lg },
+  labelRow: {
+    alignSelf: 'stretch',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.md,
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
   },
-  iconBadge: {
-    width: 48,
-    height: 48,
-    borderRadius: Radius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  label: {
-    color: 'rgba(255,255,255,0.85)',
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
-  },
-  title: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '800',
-    marginTop: 2,
-  },
-  message: {
-    color: 'rgba(255,255,255,0.92)',
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: '500',
-  },
-  fenceRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    alignSelf: 'flex-start',
-    backgroundColor: 'rgba(255,255,255,0.18)',
-    paddingHorizontal: 10,
+  labelPill: {
+    backgroundColor: Colors.onDark,
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.md,
     paddingVertical: 6,
-    borderRadius: Radius.sm,
   },
-  fenceName: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '700',
+  iconWrap: { width: 128, height: 128, alignItems: 'center', justifyContent: 'center', marginTop: Spacing.lg },
+  iconRing: {
+    position: 'absolute',
+    width: 128,
+    height: 128,
+    borderRadius: 64,
+    backgroundColor: Colors.onDarkPressed,
   },
-  actions: {
+  iconCircle: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    backgroundColor: Colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  title: { marginTop: Spacing.sm },
+  message: { fontSize: 17, lineHeight: 25 },
+  chip: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
-    marginTop: Spacing.sm,
+    maxWidth: '100%',
+    backgroundColor: Colors.onDark,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
   },
-  btn: {
+  chipText: { flexShrink: 1 },
+  actions: { gap: Spacing.md },
+  primary: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+    gap: Spacing.sm,
+    minHeight: 60,
     borderRadius: Radius.md,
+    backgroundColor: Colors.surface,
   },
-  btnPrimary: {
-    flex: 1,
-    backgroundColor: '#fff',
-  },
-  btnGhost: {
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    paddingHorizontal: 14,
-  },
-  btnText: {
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  btnTextGhost: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '700',
+  secondary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    minHeight: 52,
+    borderRadius: Radius.md,
+    borderWidth: 1.5,
+    borderColor: Colors.textInverse,
   },
 });
