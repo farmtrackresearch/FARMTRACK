@@ -55,7 +55,7 @@ each time it sends a position, and Supabase answers.
 |------|-----------|-------|--------|
 | [`firmware/`](firmware/) | Collar and gateway firmware, plus one small test program per hardware part. | C++ / Arduino / PlatformIO | [firmware/README.md](firmware/README.md) |
 | [`app/`](app/) | The mobile app and the Supabase database files. | Expo SDK 57 + Supabase/PostGIS | [app/README.md](app/README.md) |
-| [`docs/`](docs/) | Session log and field-test plans, data, and results. | Markdown, CSV, Python | [docs/SESSION_LOG.md](docs/SESSION_LOG.md), [docs/field-tests/SUMMARY.md](docs/field-tests/SUMMARY.md) |
+| [`docs/`](docs/) | Team guide, session log and field-test plans, data, and results. | Markdown, CSV, Python | [v2.6 team guide](docs/FARMTRACK_V2.6_TEAM_GUIDE.md), [docs/SESSION_LOG.md](docs/SESSION_LOG.md), [docs/field-tests/SUMMARY.md](docs/field-tests/SUMMARY.md) |
 | [`.claude/agents/`](.claude/agents/) | Shared Claude Code helper agents for this project. | Markdown | [Section 5](#5-claude-code-agents-for-the-team) |
 
 ---
@@ -174,6 +174,9 @@ Exact steps: [firmware/README.md → Collar and gateway](firmware/README.md#7-co
 ## 4. What changed in this version
 
 ### Version 2.5 — full review fixes
+
+**Start here:** [docs/FARMTRACK_V2.6_TEAM_GUIDE.md](docs/FARMTRACK_V2.6_TEAM_GUIDE.md) —
+how the system works now, setup, commands, testing and troubleshooting.
 
 A four-agent review found about 70 problems across the collar, gateway, database
 and app. All of them are fixed in code, or listed below as something only a

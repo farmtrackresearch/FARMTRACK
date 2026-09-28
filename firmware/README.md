@@ -267,11 +267,84 @@ pio run -e gps -t upload --upload-port COM5                     # Windows
   ```
 
 - **Just watch, without flashing again:**
-  `pio device monitor --port /dev/cu.usbserial-1120`
+  `pio device monitor --port /dev/cu.usbserial-1120 --baud 115200`
+  (always give `--baud 115200`: outside the `firmware/` folder the monitor
+  can't read `platformio.ini`, falls back to 9600 and shows gibberish)
 - **Once flashed, a board runs its program whenever it has power** (a USB
   charger or power bank is enough; no computer needed). Flash again only after
   the code changes. Close a board's monitor (`Ctrl+C`) before flashing it, or
   the port is busy.
+
+### Command cheat sheet
+
+Every command below uses the full path to PlatformIO, so it works in any
+terminal. Replace the ports with yours (`ls /dev/cu.usbserial*`); on the team
+iMac the gateway has been on `…-1120` and the collar on `…-1130`. Stop watching
+with `Ctrl+C` — the board keeps running.
+
+**Getting started**
+
+```bash
+# Go to the firmware folder (run this first)
+cd "/Users/kingdarius1874/FARMTRACK v2.4/firmware"
+
+# Which boards are plugged in? (one port per board)
+ls /dev/cu.usbserial*
+```
+
+**The real system — gateway and collar**
+
+```bash
+# GATEWAY: install the gateway program and watch it
+~/.platformio/penv/bin/pio run -e gateway -t upload -t monitor --upload-port /dev/cu.usbserial-1120 --monitor-port /dev/cu.usbserial-1120
+
+# COLLAR: install the collar program and watch it
+~/.platformio/penv/bin/pio run -e collar -t upload -t monitor --upload-port /dev/cu.usbserial-1130 --monitor-port /dev/cu.usbserial-1130
+
+# GATEWAY: just watch (no install)
+~/.platformio/penv/bin/pio device monitor --port /dev/cu.usbserial-1120 --baud 115200
+
+# COLLAR: just watch (no install)
+~/.platformio/penv/bin/pio device monitor --port /dev/cu.usbserial-1130 --baud 115200
+
+# FIELD TEST: watch the gateway AND save everything to a log file (in firmware/logs/logs/)
+cd "/Users/kingdarius1874/FARMTRACK v2.4/firmware/logs" && ~/.platformio/penv/bin/pio device monitor --port /dev/cu.usbserial-1120 --baud 115200 -f time -f log2file
+
+# FIELD TEST: summarise a saved gateway log (signal, delivery, GPS, uploads)
+python3 "/Users/kingdarius1874/FARMTRACK v2.4/docs/field-tests/scripts/analyze_gateway_log.py" <path-to-log-file>
+
+# CHECK THE CODE BUILDS (no board needed)
+~/.platformio/penv/bin/pio run -e collar -e gateway
+```
+
+**Hardware tests** — each one *replaces* the board's program, so install
+`gateway` / `collar` again afterwards.
+
+```bash
+# BOARD CHECK: is the ESP32 alive and printing?
+~/.platformio/penv/bin/pio run -e esp32 -t upload -t monitor --upload-port /dev/cu.usbserial-1130 --monitor-port /dev/cu.usbserial-1130
+
+# GPS CHECK (collar board, outdoors): satellites and position
+~/.platformio/penv/bin/pio run -e gps -t upload -t monitor --upload-port /dev/cu.usbserial-1130 --monitor-port /dev/cu.usbserial-1130
+
+# GPS SPEED FINDER: the GPS prints gibberish — which baud rate is it using?
+~/.platformio/penv/bin/pio run -e gps_baud -t upload -t monitor --upload-port /dev/cu.usbserial-1130 --monitor-port /dev/cu.usbserial-1130
+
+# GPS POWER CHECK: is the GPS restarting from low power?
+~/.platformio/penv/bin/pio run -e gps_power -t upload -t monitor --upload-port /dev/cu.usbserial-1130 --monitor-port /dev/cu.usbserial-1130
+
+# RADIO SEND TEST (board A) — pair with the receive test on board B
+~/.platformio/penv/bin/pio run -e lora_tx -t upload -t monitor --upload-port /dev/cu.usbserial-1130 --monitor-port /dev/cu.usbserial-1130
+
+# RADIO RECEIVE TEST (board B) — prints every packet it hears
+~/.platformio/penv/bin/pio run -e lora_rx -t upload -t monitor --upload-port /dev/cu.usbserial-1120 --monitor-port /dev/cu.usbserial-1120
+
+# RADIO SEND DIAGNOSTIC: sends at every power level; shows if the radio resets (power/wiring fault)
+~/.platformio/penv/bin/pio run -e lora_diag -t upload -t monitor --upload-port /dev/cu.usbserial-1130 --monitor-port /dev/cu.usbserial-1130
+
+# RADIO RECEIVE DIAGNOSTIC: listens and reports good/corrupted packets and signal strength
+~/.platformio/penv/bin/pio run -e lora_listen -t upload -t monitor --upload-port /dev/cu.usbserial-1130 --monitor-port /dev/cu.usbserial-1130
+```
 
 ### Serial monitor
 
