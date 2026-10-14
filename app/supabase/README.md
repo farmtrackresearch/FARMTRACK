@@ -14,9 +14,24 @@ is written so it is safe to run again.
 | `tests/geofence_tests.sql` | Automated tests of the fence rules, the ingest and the security rules. Runs in a transaction that is rolled back, so nothing is kept. | No |
 | `rekey_collar.sql` | One-off per collar: moves an existing collar to its new protocol-v2 ID, keeping its history. | Yes, that collar |
 | `export_live_schema.sql` | Read-only export of the live database's structure (the result is saved as `live_schema_dump.json`, which is git-ignored). | No |
+| `migrations/20261013_latest_livestock_locations.sql` | Updates only the map view to use each collar's newest fix; keeps existing grants and security. | No |
+| `tests/latest_locations_tests.sql` | Regression tests for latest positions, delayed readings, and collars without fixes. Rolls back its test data. | No lasting changes |
 
 `gateway_ingest.sql` is gone: it never matched the live database, and
 `schema.sql` now holds the real gateway ingest.
+
+## Update an existing project for live movement
+
+Run `migrations/20261013_latest_livestock_locations.sql` in Supabase SQL Editor
+before loading the updated app. This changes only the position view, with no
+full schema reinstall or firmware flash. Then run `tests/latest_locations_tests.sql`;
+it should return `LATEST LOCATION TESTS PASSED` and keeps no test data.
+
+The app applies committed GPS inserts directly, batching bursts for 100 ms
+instead of querying the whole farm for every fix. Initial loads and reconnects
+read the view. Older uploads and slow refreshes cannot replace a newer fix.
+Fence decisions still come from the database. Actual reporting frequency still
+depends on GPS reception, the collar's roughly 3-second cycle, and the network.
 
 ## Install or upgrade: run these in order
 

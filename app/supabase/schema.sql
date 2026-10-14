@@ -1211,7 +1211,7 @@ $$;
 
 -- =============================================================================
 -- 7. View: latest position per animal
---    Average of the collar's last 5 fixes (smooths GPS jitter on the map);
+--    The collar's newest fix, without averaging away movement;
 --    last_seen_at = newest fix, last_ping_at = last time the collar was heard
 --    at all, sats = satellites in the newest fix. security_invoker: the
 --    caller's own RLS applies, so anon sees nothing.
@@ -1239,15 +1239,14 @@ SELECT l.id              AS livestock_id,
 FROM public.livestock l
 LEFT JOIN public.collars c ON c.id = l.collar_id
 LEFT JOIN LATERAL (
-  SELECT avg(r.latitude)      AS latitude,
-         avg(r.longitude)     AS longitude,
-         max(r."timestamp")   AS last_seen_at,
-         (array_agg(r.sats ORDER BY r."timestamp" DESC))[1] AS sats
-  FROM (SELECT ll.latitude, ll.longitude, ll."timestamp", ll.sats
-        FROM public.location_logs ll
-        WHERE ll.collar_id = c.id
-        ORDER BY ll."timestamp" DESC
-        LIMIT 5) r
+  SELECT ll.latitude,
+         ll.longitude,
+         ll."timestamp" AS last_seen_at,
+         ll.sats
+  FROM public.location_logs ll
+  WHERE ll.collar_id = c.id
+  ORDER BY ll."timestamp" DESC, ll.received_at DESC NULLS LAST, ll.id DESC
+  LIMIT 1
 ) f ON true;
 
 -- =============================================================================

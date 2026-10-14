@@ -352,7 +352,7 @@ What the app relies on:
 | Thing | Used for |
 | --- | --- |
 | `livestock.animal_status` | The animal's fence state, decided by the database for every reading. Drives map colours and the siren. |
-| `latest_livestock_locations` view | Map positions (average of the last 5 fixes), `last_seen_at`, `last_ping_at`, satellites |
+| `latest_livestock_locations` view | Latest GPS fix per animal, `last_seen_at`, `last_ping_at`, satellites |
 | `alerts` | Alert list. The database creates and auto-resolves fence alerts. |
 | `get_geofences_geojson()` / `upsert_geofence()` | Reading and saving fences (admins only) |
 | `farm_settings` + `set_collars_muted()` | Emergency Disable |

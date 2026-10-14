@@ -22,7 +22,6 @@ import {
   evaluateAgainstFences,
   FenceEval,
   geoJsonToLatLngs,
-  haversineMeters,
   isSelfIntersecting,
   isStale,
   makeEllipseTemplate,
@@ -31,7 +30,7 @@ import {
   polygonAreaHectares,
 } from '@/lib/utils';
 import { useFarm } from '@/stores/FarmDataContext';
-import type { AnimalStatus, LivestockLocation, MapLatLng } from '@/types/database';
+import type { AnimalStatus, MapLatLng } from '@/types/database';
 
 function defaultFenceName(existingCount: number) {
   return `Fence ${existingCount + 1}`;
@@ -42,24 +41,6 @@ function humanMeters(m: number) {
   if (m >= 1000) return `${(m / 1000).toFixed(1)} km`;
   if (m < 10) return `${Math.max(0, Math.round(m))} m`;
   return `${Math.round(m)} m`;
-}
-
-// A stationary animal still gets a fresh GPS estimate every few seconds, and
-// consumer GPS carries a few metres of error, so the marker would crawl around
-// even when nothing moved. Hold the drawn position until the animal has really
-// travelled further than that noise floor. Display only: the server judges
-// every reading for fence state.
-const STABLE_THRESHOLD_M = 6;
-
-function holdPositions(prev: Record<string, MapLatLng>, locations: LivestockLocation[]) {
-  const next: Record<string, MapLatLng> = {};
-  for (const l of locations) {
-    if (l.latitude == null || l.longitude == null) continue;
-    const incoming: MapLatLng = { latitude: l.latitude, longitude: l.longitude };
-    const held = prev[l.livestock_id];
-    next[l.livestock_id] = held && haversineMeters(held, incoming) < STABLE_THRESHOLD_M ? held : incoming;
-  }
-  return next;
 }
 
 /**
@@ -125,27 +106,11 @@ export default function MapScreen() {
   const selfIntersecting = useMemo(() => isSelfIntersecting(draftPoints), [draftPoints]);
   const draftAreaHectares = useMemo(() => polygonAreaHectares(draftPoints), [draftPoints]);
 
-  // Derived from the previous render's held positions (React's "store info
-  // from previous renders" pattern) instead of mutating a ref inside useMemo.
-  const [heldFor, setHeldFor] = useState(locations);
-  const [heldPositions, setHeldPositions] = useState(() => holdPositions({}, locations));
-  if (heldFor !== locations) {
-    setHeldFor(locations);
-    setHeldPositions(holdPositions(heldPositions, locations));
-  }
-
+  // Draw every latest fix, including small movements; fence status stays server-owned.
   const mapAnimals = useMemo<MapAnimal[]>(
     () =>
-      locations.map((l) => {
-        const held = heldPositions[l.livestock_id];
-        return {
-          ...l,
-          latitude: held?.latitude ?? l.latitude,
-          longitude: held?.longitude ?? l.longitude,
-          stale: isStale(l.last_seen_at, now),
-        };
-      }),
-    [locations, heldPositions, now]
+      locations.map((l) => ({ ...l, stale: isStale(l.last_seen_at, now) })),
+    [locations, now]
   );
 
   // Frame the collars, not the phone. Fence corners are included so an animal

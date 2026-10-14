@@ -12,6 +12,7 @@ import {
 } from '@/data/mockData';
 import { useAlarm } from '@/hooks/useAlarm';
 import { BreachRecord, stepBreachStateMachine } from '@/lib/breachStateMachine';
+import { applyLocationReadings, LocationReading, queueLocationReading, reconcileLocations } from '@/lib/liveLocations';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { latLngsToRing, timeAgo } from '@/lib/utils';
 import { useAuthStore } from '@/stores/authStore';
@@ -63,6 +64,8 @@ const UNRESOLVED_ALERT_LIMIT = 500;
  * never fire once several collars report more often than the window.)
  */
 const LOCATION_RELOAD_WINDOW_MS = 1500;
+/** Batch GPS bursts briefly without querying the full farm for every fix. */
+const LOCATION_APPLY_WINDOW_MS = 100;
 const COLLAR_APPLY_WINDOW_MS = 1000;
 const GEOFENCE_RELOAD_WINDOW_MS = 500;
 const RELOAD_ALL_WINDOW_MS = 1000;
@@ -249,7 +252,7 @@ export function useFarmData() {
     if (error) return `Positions: ${error.message}`;
     const next = (data ?? []) as LivestockLocation[];
     if (await emptyBecauseSessionLost(next, locationsRef.current.length)) return SESSION_EXPIRED_MESSAGE;
-    setLocations(next);
+    setLocations((current) => reconcileLocations(current, next));
     return null;
   }, []);
 
@@ -353,6 +356,13 @@ export function useFarmData() {
       schedule('locations', LOCATION_RELOAD_WINDOW_MS, () => void loadersRef.current.loadLocations());
     const reloadLivestock = () =>
       schedule('livestock', LIVESTOCK_RECONCILE_WINDOW_MS, () => void loadersRef.current.loadLivestock());
+
+    const pendingLocations = new Map<string, LocationReading>();
+    const flushLocations = () => {
+      const readings = new Map(pendingLocations);
+      pendingLocations.clear();
+      if (readings.size > 0) setLocations((current) => applyLocationReadings(current, readings));
+    };
 
     // Every collar ping updates last_ping_at; apply them in batches so a herd
     // of collars does not re-render the app several times a second.
@@ -462,10 +472,14 @@ export function useFarmData() {
         }
       }),
 
-      subscribe<Record<string, unknown>>('location_logs', (payload) => {
+      subscribe<LocationReading & Record<string, unknown>>('location_logs', (payload) => {
         if (payload.eventType !== 'INSERT') return;
-        // A collar reports every few seconds; batch them into one view read.
-        reloadLocations();
+        queueLocationReading(pendingLocations, payload.new);
+        schedule('positions', LOCATION_APPLY_WINDOW_MS, flushLocations);
+        // Initial-load races and animals added on another phone need their joined metadata.
+        if (!locationsRef.current.some((location) => location.collar_id === payload.new.collar_id)) {
+          reloadLocations();
+        }
       }),
 
       subscribe<Livestock & Record<string, unknown>>('livestock', (payload) => {

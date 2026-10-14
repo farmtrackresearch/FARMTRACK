@@ -120,7 +120,7 @@ export interface LivestockLocation {
   battery_level: number | null;
   collar_status: CollarStatus | null;
   connection_type: ConnectionType | null;
-  /** Average of the last 5 fixes. */
+  /** Coordinates of the newest fix, without averaging or a movement threshold. */
   latitude: number | null;
   longitude: number | null;
   /** Time of the newest fix. */
